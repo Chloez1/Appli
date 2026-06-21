@@ -1,0 +1,1240 @@
+/* Studio de Conception de Produits — application sans build.
+   Données persistées dans localStorage. Visionneuse 3D via Three.js (CDN, à la demande). */
+(function () {
+  "use strict";
+
+  const STORAGE_KEY = "studio-conception-produits/v1";
+  const CATS_KEY = "studio-conception-produits/categories/v1";
+
+  const STAGES = [
+    { id: "idea", label: "Idée", color: "var(--col-idea)" },
+    { id: "design", label: "Conception", color: "var(--col-design)" },
+    { id: "prototype", label: "Prototype", color: "var(--col-prototype)" },
+    { id: "validated", label: "Validé", color: "var(--col-validated)" },
+    { id: "launched", label: "Lancé", color: "var(--col-launched)" },
+  ];
+  const PRIORITY_ORDER = { Haute: 0, Moyenne: 1, Basse: 2 };
+  const DEFAULT_CATEGORIES = [
+    "Mobilier", "Électronique", "Accessoire", "Électroménager",
+    "Mode & Textile", "Jouet & Loisir", "Emballage", "Autre",
+  ];
+
+  /** @type {Array} */
+  let products = [];
+  /** @type {string[]} */
+  let categories = [];
+  let editingId = null;
+  // Valeurs en cours d'édition pour les fichiers (lien OU fichier importé en data URL).
+  let formImage = "";
+  let formModel = { data: "", name: "" };
+
+  // ---- Persistance -------------------------------------------------------
+  function load() {
+    try {
+      const raw = localStorage.getItem(STORAGE_KEY);
+      products = raw ? JSON.parse(raw) : seed();
+    } catch (e) {
+      console.warn("Lecture du stockage impossible, réinitialisation.", e);
+      products = seed();
+    }
+    products = products.map(normalize);
+    loadCategories();
+    save();
+    saveCategories();
+  }
+
+  function loadCategories() {
+    let stored = null;
+    try {
+      const raw = localStorage.getItem(CATS_KEY);
+      stored = raw ? JSON.parse(raw) : null;
+    } catch (_) { /* ignore */ }
+    const used = products.map((p) => p.category).filter(Boolean);
+    const base = Array.isArray(stored) ? stored : DEFAULT_CATEGORIES;
+    categories = uniqueSorted([...base, ...used]);
+  }
+
+  function save() {
+    try { localStorage.setItem(STORAGE_KEY, JSON.stringify(products)); }
+    catch (e) {
+      console.warn("Écriture dans le stockage impossible.", e);
+      toast("⚠️ Stockage du navigateur plein : un fichier importé est peut-être trop volumineux.");
+    }
+  }
+  function saveCategories() {
+    try { localStorage.setItem(CATS_KEY, JSON.stringify(categories)); }
+    catch (e) { console.warn("Écriture des catégories impossible.", e); }
+  }
+
+  function normalize(p) {
+    return {
+      id: p.id || uid(),
+      name: String(p.name || "Sans nom"),
+      category: p.category || "",
+      status: STAGES.some((s) => s.id === p.status) ? p.status : "idea",
+      priority: PRIORITY_ORDER[p.priority] !== undefined ? p.priority : "Moyenne",
+      cost: Number(p.cost) || 0,
+      description: p.description || "",
+      materials: Array.isArray(p.materials) ? p.materials : [],
+      image: p.image || "",
+      model3d: p.model3d || "",
+      model3dName: p.model3dName || "",
+      validatedAt: p.validatedAt || "",
+      launchedAt: p.launchedAt || "",
+      notes: p.notes || "",
+      createdAt: p.createdAt || Date.now(),
+      updatedAt: p.updatedAt || Date.now(),
+    };
+  }
+
+  function seed() {
+    const now = Date.now();
+    const d = (daysAgo) => new Date(now - daysAgo * 86400000).toISOString().slice(0, 10);
+    return [
+      {
+        id: uid(), name: "Lampe modulaire Aura", category: "Mobilier",
+        status: "design", priority: "Haute", cost: 89,
+        description: "Lampe d'appoint à modules aimantés que l'utilisateur réagence à volonté.",
+        materials: ["Aluminium", "Verre dépoli"], image: "", model3d: "", notes: "Tester l'aimantation à 3 modules.",
+        createdAt: now - 86400000 * 5, updatedAt: now - 86400000 * 2,
+      },
+      {
+        id: uid(), name: "Gourde isotherme Loop", category: "Accessoire",
+        status: "validated", priority: "Moyenne", cost: 24.5,
+        description: "Gourde 24h froid / 12h chaud avec anse intégrée en silicone.",
+        materials: ["Inox 304", "Silicone"], image: "", model3d: "", validatedAt: d(6),
+        notes: "Validée pour passage en prototype final.",
+        createdAt: now - 86400000 * 12, updatedAt: now - 86400000,
+      },
+      {
+        id: uid(), name: "Clavier pliable Fold", category: "Électronique",
+        status: "launched", priority: "Basse", cost: 119,
+        description: "Clavier mécanique qui se plie en deux pour le nomadisme.",
+        materials: ["ABS", "Acier"], image: "", model3d: "", validatedAt: d(20), launchedAt: d(3),
+        notes: "Lancé en édition limitée.",
+        createdAt: now - 86400000 * 30, updatedAt: now - 86400000 * 3,
+      },
+    ];
+  }
+
+  function uid() {
+    return "p_" + Math.random().toString(36).slice(2, 10) + Date.now().toString(36);
+  }
+
+  // ---- Éléments DOM ------------------------------------------------------
+  const $ = (sel) => document.querySelector(sel);
+  const statsEl = $("#stats");
+  const searchEl = $("#search");
+  const filterCat = $("#filter-category");
+  const filterPrio = $("#filter-priority");
+  const sortEl = $("#sort");
+  const modal = $("#modal");
+  const form = $("#form");
+  const catModal = $("#cat-modal");
+  const viewerEl = $("#viewer");
+  const viewEl = $("#view");
+  const toolbarEl = $("#toolbar");
+  let currentView = "board";
+
+  // ---- Helpers -----------------------------------------------------------
+  function uniqueSorted(arr) {
+    return [...new Set(arr.filter(Boolean))].sort((a, b) => a.localeCompare(b, "fr"));
+  }
+  function todayStr() { return new Date().toISOString().slice(0, 10); }
+  function formatDate(s) {
+    if (!s) return "";
+    const dt = new Date(s);
+    return isNaN(dt) ? s : dt.toLocaleDateString("fr-FR", { day: "2-digit", month: "short", year: "numeric" });
+  }
+
+  // ---- Rendu -------------------------------------------------------------
+  function getVisible() {
+    const q = searchEl.value.trim().toLowerCase();
+    const cat = filterCat.value;
+    const prio = filterPrio.value;
+
+    let list = products.filter((p) => {
+      if (cat && p.category !== cat) return false;
+      if (prio && p.priority !== prio) return false;
+      if (q) {
+        const hay = [p.name, p.category, p.description, p.notes, (p.materials || []).join(" ")]
+          .join(" ").toLowerCase();
+        if (!hay.includes(q)) return false;
+      }
+      return true;
+    });
+
+    const sort = sortEl.value;
+    list.sort((a, b) => {
+      if (sort === "name") return a.name.localeCompare(b.name, "fr");
+      if (sort === "created") return b.createdAt - a.createdAt;
+      if (sort === "priority") return PRIORITY_ORDER[a.priority] - PRIORITY_ORDER[b.priority];
+      return b.updatedAt - a.updatedAt;
+    });
+    return list;
+  }
+
+  function render() {
+    renderStats();
+    renderFilterCategories();
+    renderView();
+  }
+
+  function renderView() {
+    // La barre de filtres ne sert qu'aux vues liste (tableau / galerie).
+    const filterable = currentView === "board" || currentView === "gallery";
+    toolbarEl.classList.toggle("hidden", !filterable);
+    viewEl.dataset.view = currentView;
+    if (currentView === "gallery") renderGallery();
+    else if (currentView === "timeline") renderTimeline();
+    else if (currentView === "dashboard") renderDashboard();
+    else renderBoard();
+  }
+
+  function setView(view) {
+    currentView = view;
+    document.querySelectorAll(".viewtab").forEach((b) =>
+      b.classList.toggle("active", b.dataset.view === view));
+    renderView();
+  }
+
+  function emptyState(msg) {
+    const div = document.createElement("div");
+    div.className = "empty-state";
+    div.innerHTML = `<div class="empty-emoji">🧩</div>
+      <p>${escHtml(msg || "Aucun concept pour l'instant.")}</p>
+      <button class="btn btn-primary" id="empty-new">+ Nouveau concept</button>`;
+    div.querySelector("#empty-new").addEventListener("click", () => openModal(null));
+    return div;
+  }
+
+  function renderStats() {
+    const total = products.length;
+    const launched = products.filter((p) => p.status === "launched").length;
+    const validated = products.filter((p) => p.status === "validated").length;
+    const inProgress = products.filter((p) => ["design", "prototype"].includes(p.status)).length;
+
+    const cards = [
+      { value: total, label: "Concepts au total" },
+      { value: inProgress, label: "En cours de conception" },
+      { value: validated, label: "Validés" },
+      { value: launched, label: "Produits lancés" },
+    ];
+    statsEl.innerHTML = cards
+      .map((c) => `<div class="stat-card"><div class="stat-value">${c.value}</div><div class="stat-label">${c.label}</div></div>`)
+      .join("");
+  }
+
+  function renderFilterCategories() {
+    const current = filterCat.value;
+    filterCat.innerHTML = '<option value="">Toutes les catégories</option>' +
+      categories.map((c) => `<option value="${escAttr(c)}">${escHtml(c)}</option>`).join("");
+    if (categories.includes(current)) filterCat.value = current;
+  }
+
+  function renderBoard() {
+    const visible = getVisible();
+    const grid = document.createElement("div");
+    grid.className = "board";
+    for (const stage of STAGES) {
+      const items = visible.filter((p) => p.status === stage.id);
+      const col = document.createElement("div");
+      col.className = "column";
+      col.dataset.status = stage.id;
+      col.innerHTML = `
+        <div class="column-head">
+          <span class="dot" style="background:${stage.color}"></span>
+          <span>${stage.label}</span>
+          <span class="count">${items.length}</span>
+        </div>
+        <div class="column-body"></div>`;
+      const body = col.querySelector(".column-body");
+      if (items.length === 0) {
+        body.innerHTML = '<div class="empty-col">Aucun concept</div>';
+      } else {
+        items.forEach((p, i) => {
+          const c = cardEl(p);
+          c.style.animationDelay = (i * 28) + "ms";
+          body.appendChild(c);
+        });
+      }
+      attachDnd(col, stage.id);
+      grid.appendChild(col);
+    }
+    viewEl.replaceChildren(grid);
+  }
+
+  // ---- Vue Galerie -------------------------------------------------------
+  function renderGallery() {
+    const visible = getVisible();
+    if (!visible.length) { viewEl.replaceChildren(emptyState("Aucun concept ne correspond à votre recherche.")); return; }
+    const grid = document.createElement("div");
+    grid.className = "gallery";
+    visible.forEach((p, i) => {
+      const c = galleryCard(p);
+      c.style.animationDelay = (i * 24) + "ms";
+      grid.appendChild(c);
+    });
+    viewEl.replaceChildren(grid);
+  }
+
+  function galleryCard(p) {
+    const el = document.createElement("article");
+    el.className = "gcard";
+    el.dataset.id = p.id;
+    const stage = STAGES.find((s) => s.id === p.status);
+    const media = p.image
+      ? `<img src="${escAttr(p.image)}" alt="" onerror="this.parentNode.classList.add('noimg')">`
+      : "";
+    const badge3d = p.model3d ? `<button class="badge-3d" data-3d>🧊 3D</button>` : "";
+    const cost = Number(p.cost) > 0 ? `<span class="gcost">${Number(p.cost).toFixed(0)} €</span>` : "";
+    el.innerHTML = `
+      <div class="gmedia ${p.image ? "" : "noimg"}">
+        ${media}
+        <span class="gstage" style="--c:${stage.color}">${stage.label}</span>
+        ${badge3d}
+      </div>
+      <div class="gbody">
+        <h3 class="gtitle">${escHtml(p.name)}</h3>
+        ${p.description ? `<p class="gdesc">${escHtml(p.description)}</p>` : ""}
+        <div class="gmeta">
+          ${p.category ? `<span class="tag cat">${escHtml(p.category)}</span>` : ""}
+          <span class="tag prio-${p.priority}">${p.priority}</span>
+          ${cost}
+        </div>
+      </div>`;
+    el.addEventListener("click", (e) => {
+      if (e.target.closest("[data-3d]")) { e.stopPropagation(); openViewer(p.model3d, `${p.name} — modèle 3D`, p.model3dName); return; }
+      openModal(p.id);
+    });
+    return el;
+  }
+
+  // ---- Vue Chronologie ---------------------------------------------------
+  function renderTimeline() {
+    const events = [];
+    products.forEach((p) => {
+      const created = p.createdAt ? new Date(p.createdAt).toISOString().slice(0, 10) : "";
+      if (created) events.push({ date: created, type: "created", p });
+      if (p.validatedAt) events.push({ date: p.validatedAt, type: "validated", p });
+      if (p.launchedAt) events.push({ date: p.launchedAt, type: "launched", p });
+    });
+    if (!events.length) { viewEl.replaceChildren(emptyState("Aucun événement à afficher.")); return; }
+    events.sort((a, b) => (a.date < b.date ? 1 : a.date > b.date ? -1 : 0));
+
+    const meta = {
+      created: { label: "Concept créé", color: "var(--col-design)", icon: "✦" },
+      validated: { label: "Validé", color: "var(--col-validated)", icon: "✅" },
+      launched: { label: "Lancé", color: "var(--col-launched)", icon: "🚀" },
+    };
+    const wrap = document.createElement("div");
+    wrap.className = "timeline";
+    let lastMonth = "";
+    events.forEach((e, i) => {
+      const m = e.date.slice(0, 7);
+      if (m !== lastMonth) {
+        lastMonth = m;
+        const h = document.createElement("div");
+        h.className = "tl-month";
+        h.textContent = new Date(e.date).toLocaleDateString("fr-FR", { month: "long", year: "numeric" });
+        wrap.appendChild(h);
+      }
+      const mt = meta[e.type];
+      const item = document.createElement("div");
+      item.className = "tl-item";
+      item.style.animationDelay = (i * 20) + "ms";
+      item.innerHTML = `
+        <span class="tl-dot" style="background:${mt.color}"></span>
+        <div class="tl-card">
+          <div class="tl-top"><span class="tl-type">${mt.icon} ${mt.label}</span><span class="tl-date">${formatDate(e.date)}</span></div>
+          <div class="tl-name">${escHtml(e.p.name)}</div>
+          ${e.p.category ? `<span class="tag cat">${escHtml(e.p.category)}</span>` : ""}
+        </div>`;
+      item.querySelector(".tl-card").addEventListener("click", () => openModal(e.p.id));
+      wrap.appendChild(item);
+    });
+    viewEl.replaceChildren(wrap);
+  }
+
+  // ---- Vue Tableau de bord ----------------------------------------------
+  function renderDashboard() {
+    const total = products.length;
+    const wrap = document.createElement("div");
+    wrap.className = "dashboard";
+    if (!total) { viewEl.replaceChildren(emptyState("Ajoutez des concepts pour voir vos statistiques.")); return; }
+
+    const launched = products.filter((p) => p.status === "launched").length;
+    const validated = products.filter((p) => p.status === "validated").length;
+    const costs = products.map((p) => Number(p.cost) || 0).filter((c) => c > 0);
+    const avg = costs.length ? costs.reduce((a, b) => a + b, 0) / costs.length : 0;
+    const launchRate = total ? Math.round((launched / total) * 100) : 0;
+
+    const tiles = [
+      { v: total, l: "Concepts", s: "🧩" },
+      { v: validated, l: "Validés", s: "✅" },
+      { v: launched, l: "Lancés", s: "🚀" },
+      { v: launchRate + " %", l: "Taux de lancement", s: "📈" },
+      { v: avg ? avg.toFixed(0) + " €" : "—", l: "Coût cible moyen", s: "💶" },
+    ];
+    const kpi = `<div class="kpi-grid">${tiles.map((t) =>
+      `<div class="kpi"><div class="kpi-emoji">${t.s}</div><div class="kpi-v">${t.v}</div><div class="kpi-l">${t.l}</div></div>`).join("")}</div>`;
+
+    const stageItems = STAGES.map((s) => ({ label: s.label, value: products.filter((p) => p.status === s.id).length, color: s.color }));
+    const prioColors = { Haute: "#ff6b6b", Moyenne: "#f6c453", Basse: "#4dd599" };
+    const prioItems = ["Haute", "Moyenne", "Basse"].map((pr) => ({ label: pr, value: products.filter((p) => p.priority === pr).length, color: prioColors[pr] }));
+    const catCounts = {};
+    products.forEach((p) => { const c = p.category || "Sans catégorie"; catCounts[c] = (catCounts[c] || 0) + 1; });
+    const catItems = Object.entries(catCounts).sort((a, b) => b[1] - a[1]).slice(0, 8)
+      .map(([label, value], i) => ({ label, value, color: `hsl(${(i * 47) % 360} 70% 62%)` }));
+
+    wrap.innerHTML = `
+      ${kpi}
+      <div class="panels">
+        <div class="panel">${barChart("Répartition par étape", stageItems)}</div>
+        <div class="panel">${barChart("Par catégorie", catItems)}</div>
+        <div class="panel">${barChart("Par priorité", prioItems)}</div>
+      </div>`;
+    viewEl.replaceChildren(wrap);
+  }
+
+  function barChart(title, items) {
+    const max = Math.max(1, ...items.map((i) => i.value));
+    const rows = items.map((it) => {
+      const pct = Math.round((it.value / max) * 100);
+      return `<div class="bar-row">
+        <span class="bar-label" title="${escAttr(it.label)}">${escHtml(it.label)}</span>
+        <div class="bar-track"><div class="bar-fill" style="width:${pct}%;background:${it.color}"></div></div>
+        <span class="bar-val">${it.value}</span>
+      </div>`;
+    }).join("");
+    return `<h3 class="panel-title">${escHtml(title)}</h3><div class="bars">${rows || '<p class="muted">Aucune donnée.</p>'}</div>`;
+  }
+
+  function cardEl(p) {
+    const el = document.createElement("article");
+    el.className = "card";
+    el.draggable = true;
+    el.dataset.id = p.id;
+
+    const materials = (p.materials || []).slice(0, 2).map((m) => `<span class="tag">${escHtml(m)}</span>`).join("");
+    const thumb = p.image
+      ? `<img class="card-thumb" src="${escAttr(p.image)}" alt="" onerror="this.style.display='none'">`
+      : "";
+    const cost = Number(p.cost) > 0 ? `<span class="card-cost">${Number(p.cost).toFixed(0)} €</span>` : "";
+
+    const milestones = [];
+    if (p.validatedAt) milestones.push(`<span class="milestone validated">✅ Validé ${formatDate(p.validatedAt)}</span>`);
+    if (p.launchedAt) milestones.push(`<span class="milestone launched">🚀 Lancé ${formatDate(p.launchedAt)}</span>`);
+    const milestonesHtml = milestones.length ? `<div class="card-milestones">${milestones.join("")}</div>` : "";
+
+    const badge3d = p.model3d
+      ? `<button class="badge-3d" data-3d title="Voir le modèle 3D">🧊 3D</button>` : "";
+
+    el.innerHTML = `
+      ${thumb}
+      <h3 class="card-title">${escHtml(p.name)}</h3>
+      ${p.description ? `<p class="card-desc">${escHtml(p.description)}</p>` : ""}
+      ${milestonesHtml}
+      <div class="card-meta">
+        ${p.category ? `<span class="tag cat">${escHtml(p.category)}</span>` : ""}
+        <span class="tag prio-${p.priority}">${p.priority}</span>
+        ${materials}
+        ${badge3d}
+        ${cost}
+      </div>`;
+
+    el.addEventListener("click", (e) => {
+      if (e.target.closest("[data-3d]")) {
+        e.stopPropagation();
+        openViewer(p.model3d, `${p.name} — modèle 3D`, p.model3dName);
+        return;
+      }
+      openModal(p.id);
+    });
+    el.addEventListener("dragstart", (e) => {
+      el.classList.add("dragging");
+      e.dataTransfer.setData("text/plain", p.id);
+      e.dataTransfer.effectAllowed = "move";
+    });
+    el.addEventListener("dragend", () => el.classList.remove("dragging"));
+    return el;
+  }
+
+  // ---- Glisser-déposer ---------------------------------------------------
+  function attachDnd(col, statusId) {
+    col.addEventListener("dragover", (e) => { e.preventDefault(); col.classList.add("drag-over"); });
+    col.addEventListener("dragleave", (e) => {
+      if (!col.contains(e.relatedTarget)) col.classList.remove("drag-over");
+    });
+    col.addEventListener("drop", (e) => {
+      e.preventDefault();
+      col.classList.remove("drag-over");
+      const id = e.dataTransfer.getData("text/plain");
+      const p = products.find((x) => x.id === id);
+      if (p && p.status !== statusId) {
+        p.status = statusId;
+        applyMilestoneDates(p);
+        p.updatedAt = Date.now();
+        save();
+        render();
+        toast(`« ${p.name} » déplacé vers ${STAGES.find((s) => s.id === statusId).label}`);
+      }
+    });
+  }
+
+  /** Renseigne automatiquement la date de validation/lancement selon l'étape. */
+  function applyMilestoneDates(p) {
+    if (p.status === "validated" && !p.validatedAt) p.validatedAt = todayStr();
+    if (p.status === "launched") {
+      if (!p.launchedAt) p.launchedAt = todayStr();
+      if (!p.validatedAt) p.validatedAt = todayStr();
+    }
+  }
+
+  // ---- Modale concept ----------------------------------------------------
+  function populateCategorySelect(selectedValue) {
+    const sel = $("#f-category");
+    const opts = [...categories];
+    if (selectedValue && !opts.includes(selectedValue)) opts.unshift(selectedValue);
+    sel.innerHTML =
+      '<option value="">(Sans catégorie)</option>' +
+      opts.map((c) => `<option value="${escAttr(c)}">${escHtml(c)}</option>`).join("") +
+      '<option value="__new__">➕ Nouvelle catégorie…</option>';
+    sel.value = selectedValue || "";
+  }
+
+  // ---- Import de fichiers dans la fiche (image & modèle 3D) --------------
+  function isDataUrl(s) { return /^data:/i.test(s || ""); }
+
+  /** Redimensionne une image importée pour limiter le poids stocké. */
+  function downscaleImage(file, maxDim) {
+    return new Promise((resolve, reject) => {
+      const objUrl = URL.createObjectURL(file);
+      const im = new Image();
+      im.onload = () => {
+        URL.revokeObjectURL(objUrl);
+        const scale = Math.min(1, maxDim / Math.max(im.width, im.height));
+        const w = Math.max(1, Math.round(im.width * scale));
+        const h = Math.max(1, Math.round(im.height * scale));
+        const cv = document.createElement("canvas");
+        cv.width = w; cv.height = h;
+        cv.getContext("2d").drawImage(im, 0, 0, w, h);
+        const type = file.type === "image/png" ? "image/png" : "image/jpeg";
+        resolve(cv.toDataURL(type, 0.85));
+      };
+      im.onerror = () => { URL.revokeObjectURL(objUrl); reject(new Error("Image illisible.")); };
+      im.src = objUrl;
+    });
+  }
+
+  function updateImagePreview() {
+    const prev = $("#f-image-preview");
+    if (formImage) {
+      prev.classList.remove("hidden");
+      prev.innerHTML = `<img src="${escAttr(formImage)}" alt="" onerror="this.style.opacity=0.3">
+        <button type="button" class="img-remove" data-remove-image>Retirer</button>`;
+    } else {
+      prev.classList.add("hidden");
+      prev.innerHTML = "";
+    }
+  }
+
+  function updateModelInfo() {
+    const el = $("#f-model-name");
+    if (formModel.data) {
+      const label = isDataUrl(formModel.data) ? (formModel.name || "modèle importé") : formModel.data;
+      el.classList.remove("hidden");
+      el.innerHTML = `<span>📦 ${escHtml(label)}</span>
+        <button type="button" class="img-remove" data-remove-model>Retirer</button>`;
+    } else {
+      el.classList.add("hidden");
+      el.innerHTML = "";
+    }
+  }
+
+  function onImageFile(e) {
+    const file = e.target.files[0];
+    if (!file) return;
+    downscaleImage(file, 1280).then((dataUrl) => {
+      formImage = dataUrl;
+      $("#f-image").value = "";
+      updateImagePreview();
+      toast("Image importée");
+    }).catch((err) => alert("Import impossible : " + err.message));
+    e.target.value = "";
+  }
+
+  function onModelFile(e) {
+    const file = e.target.files[0];
+    if (!file) return;
+    const mb = file.size / (1024 * 1024);
+    if (mb > 4 && !confirm(`Ce modèle pèse ${mb.toFixed(1)} Mo. Les fichiers volumineux peuvent dépasser la capacité de stockage du navigateur. L'importer quand même ?`)) {
+      e.target.value = ""; return;
+    }
+    const reader = new FileReader();
+    reader.onload = () => {
+      formModel = { data: reader.result, name: file.name };
+      $("#f-model").value = "";
+      updateModelInfo();
+      toast("Modèle 3D importé");
+    };
+    reader.onerror = () => alert("Lecture du fichier impossible.");
+    reader.readAsDataURL(file);
+    e.target.value = "";
+  }
+
+  function openModal(id) {
+    editingId = id || null;
+    const p = id ? products.find((x) => x.id === id) : null;
+    $("#modal-title").textContent = p ? "Modifier le concept" : "Nouveau concept";
+    $("#btn-delete").classList.toggle("hidden", !p);
+
+    $("#f-id").value = p ? p.id : "";
+    $("#f-name").value = p ? p.name : "";
+    populateCategorySelect(p ? p.category || "" : "");
+    $("#f-status").value = p ? p.status : "idea";
+    $("#f-priority").value = p ? p.priority : "Moyenne";
+    $("#f-cost").value = p && p.cost ? p.cost : "";
+    $("#f-validatedAt").value = p ? p.validatedAt || "" : "";
+    $("#f-launchedAt").value = p ? p.launchedAt || "" : "";
+    $("#f-description").value = p ? p.description || "" : "";
+    $("#f-materials").value = p ? (p.materials || []).join(", ") : "";
+
+    formImage = p ? p.image || "" : "";
+    formModel = { data: p ? p.model3d || "" : "", name: p ? p.model3dName || "" : "" };
+    $("#f-image").value = isDataUrl(formImage) ? "" : formImage;
+    $("#f-model").value = isDataUrl(formModel.data) ? "" : formModel.data;
+    updateImagePreview();
+    updateModelInfo();
+
+    $("#f-notes").value = p ? p.notes || "" : "";
+
+    modal.classList.remove("hidden");
+    setTimeout(() => $("#f-name").focus(), 30);
+  }
+
+  function closeModal() {
+    modal.classList.add("hidden");
+    editingId = null;
+    form.reset();
+    formImage = "";
+    formModel = { data: "", name: "" };
+    updateImagePreview();
+    updateModelInfo();
+  }
+
+  function onCategoryChange(e) {
+    if (e.target.value !== "__new__") return;
+    const name = (prompt("Nom de la nouvelle catégorie :") || "").trim();
+    if (name) {
+      if (!categories.includes(name)) { categories = uniqueSorted([...categories, name]); saveCategories(); renderFilterCategories(); }
+      populateCategorySelect(name);
+    } else {
+      populateCategorySelect("");
+    }
+  }
+
+  function submitForm(e) {
+    e.preventDefault();
+    const name = $("#f-name").value.trim();
+    if (!name) return;
+
+    const materials = $("#f-materials").value.split(",").map((m) => m.trim()).filter(Boolean);
+    const data = {
+      name,
+      category: $("#f-category").value === "__new__" ? "" : $("#f-category").value,
+      status: $("#f-status").value,
+      priority: $("#f-priority").value,
+      cost: parseFloat($("#f-cost").value) || 0,
+      validatedAt: $("#f-validatedAt").value || "",
+      launchedAt: $("#f-launchedAt").value || "",
+      description: $("#f-description").value.trim(),
+      materials,
+      image: formImage,
+      model3d: formModel.data,
+      model3dName: isDataUrl(formModel.data) ? formModel.name : "",
+      notes: $("#f-notes").value.trim(),
+    };
+    applyMilestoneDates(data);
+
+    if (editingId) {
+      const p = products.find((x) => x.id === editingId);
+      Object.assign(p, data, { updatedAt: Date.now() });
+      toast("Concept mis à jour");
+    } else {
+      products.push(normalize({ ...data, createdAt: Date.now(), updatedAt: Date.now() }));
+      toast("Concept créé");
+    }
+    // Mémorise une éventuelle catégorie saisie.
+    if (data.category && !categories.includes(data.category)) {
+      categories = uniqueSorted([...categories, data.category]);
+      saveCategories();
+    }
+    save();
+    render();
+    closeModal();
+  }
+
+  function deleteCurrent() {
+    if (!editingId) return;
+    const p = products.find((x) => x.id === editingId);
+    if (!p) return;
+    if (!confirm(`Supprimer définitivement « ${p.name} » ?`)) return;
+    products = products.filter((x) => x.id !== editingId);
+    save();
+    render();
+    closeModal();
+    toast("Concept supprimé");
+  }
+
+  // ---- Gestionnaire de catégories ---------------------------------------
+  function openCatModal() { renderCatList(); catModal.classList.remove("hidden"); }
+  function closeCatModal() { catModal.classList.add("hidden"); }
+
+  function renderCatList() {
+    const list = $("#cat-list");
+    list.innerHTML = categories.map((c) => {
+      const usage = products.filter((p) => p.category === c).length;
+      const usageLabel = usage ? `${usage} produit${usage > 1 ? "s" : ""}` : "inutilisée";
+      return `<li>
+        <span class="cat-name">${escHtml(c)}</span>
+        <span class="cat-usage">${usageLabel}</span>
+        <button class="cat-del" data-cat="${escAttr(c)}" ${usage ? "disabled" : ""}
+          title="${usage ? "Catégorie utilisée — réassignez les produits avant de supprimer" : "Supprimer"}">🗑</button>
+      </li>`;
+    }).join("") || '<li class="cat-usage">Aucune catégorie.</li>';
+
+    list.querySelectorAll(".cat-del").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        const c = btn.dataset.cat;
+        categories = categories.filter((x) => x !== c);
+        saveCategories();
+        renderCatList();
+        renderFilterCategories();
+        toast(`Catégorie « ${c} » supprimée`);
+      });
+    });
+  }
+
+  function addCategory(e) {
+    e.preventDefault();
+    const input = $("#cat-input");
+    const name = input.value.trim();
+    if (!name) return;
+    if (categories.includes(name)) { toast("Cette catégorie existe déjà"); return; }
+    categories = uniqueSorted([...categories, name]);
+    saveCategories();
+    input.value = "";
+    renderCatList();
+    renderFilterCategories();
+    toast(`Catégorie « ${name} » ajoutée`);
+  }
+
+  // ---- Visionneuse 3D ----------------------------------------------------
+  const V = { inited: false, running: false };
+  let libsPromise = null;
+
+  function loadLibs() {
+    if (!libsPromise) {
+      libsPromise = (async () => {
+        const THREE = await import("three");
+        const { OrbitControls } = await import("three/addons/controls/OrbitControls.js");
+        const { GLTFLoader } = await import("three/addons/loaders/GLTFLoader.js");
+        const { STLLoader } = await import("three/addons/loaders/STLLoader.js");
+        const { OBJLoader } = await import("three/addons/loaders/OBJLoader.js");
+        return { THREE, OrbitControls, GLTFLoader, STLLoader, OBJLoader };
+      })();
+    }
+    return libsPromise;
+  }
+
+  function viewerStatus(msg) {
+    const el = $("#viewer-status");
+    el.textContent = msg || "";
+    el.style.display = msg ? "grid" : "none";
+  }
+
+  async function initViewer() {
+    const { THREE, OrbitControls } = await loadLibs();
+    const wrap = $("#viewer-canvas");
+    const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    if ("outputColorSpace" in renderer) renderer.outputColorSpace = THREE.SRGBColorSpace;
+    renderer.toneMapping = THREE.ACESFilmicToneMapping;
+    renderer.toneMappingExposure = 1.05;
+    wrap.appendChild(renderer.domElement);
+
+    const scene = new THREE.Scene();
+    const camera = new THREE.PerspectiveCamera(45, 1, 0.01, 100000);
+    camera.position.set(2.4, 1.8, 3);
+
+    const controls = new OrbitControls(camera, renderer.domElement);
+    controls.enableDamping = true;
+    controls.dampingFactor = 0.08;
+
+    scene.add(new THREE.HemisphereLight(0xffffff, 0x2a3140, 1.0));
+    const key = new THREE.DirectionalLight(0xffffff, 2.0);
+    key.position.set(5, 8, 6);
+    scene.add(key);
+    const fill = new THREE.DirectionalLight(0xbcd0ff, 0.7);
+    fill.position.set(-6, 2, -4);
+    scene.add(fill);
+    const rim = new THREE.DirectionalLight(0xffffff, 0.6);
+    rim.position.set(0, -4, -6);
+    scene.add(rim);
+
+    const grid = new THREE.GridHelper(10, 20, 0x4060a0, 0x223044);
+    grid.material.opacity = 0.3;
+    grid.material.transparent = true;
+    scene.add(grid);
+
+    Object.assign(V, { inited: true, THREE, renderer, scene, camera, controls, grid, wrap, current: null });
+
+    window.addEventListener("resize", resizeViewer);
+  }
+
+  function resizeViewer() {
+    if (!V.inited) return;
+    const w = V.wrap.clientWidth, h = V.wrap.clientHeight;
+    if (!w || !h) return;
+    V.camera.aspect = w / h;
+    V.camera.updateProjectionMatrix();
+    V.renderer.setSize(w, h, false);
+  }
+
+  function startLoop() {
+    if (V.running) return;
+    V.running = true;
+    const tick = () => {
+      if (!V.running) return;
+      V.animId = requestAnimationFrame(tick);
+      V.controls.update();
+      V.renderer.render(V.scene, V.camera);
+    };
+    tick();
+  }
+  function stopLoop() { V.running = false; cancelAnimationFrame(V.animId); }
+
+  function disposeObject(obj) {
+    obj.traverse((o) => {
+      if (o.geometry) o.geometry.dispose();
+      if (o.material) {
+        const mats = Array.isArray(o.material) ? o.material : [o.material];
+        mats.forEach((m) => m && m.dispose && m.dispose());
+      }
+    });
+  }
+
+  function setObject(obj) {
+    const { THREE } = V;
+    if (V.current) { V.scene.remove(V.current); disposeObject(V.current); }
+    V.current = obj;
+    V.scene.add(obj);
+
+    const box = new THREE.Box3().setFromObject(obj);
+    const size = box.getSize(new THREE.Vector3());
+    const center = box.getCenter(new THREE.Vector3());
+    obj.position.sub(center);
+    const maxDim = Math.max(size.x, size.y, size.z) || 1;
+
+    V.grid.scale.setScalar(maxDim / 5);
+    frameCurrent(maxDim);
+  }
+
+  function frameCurrent(maxDim) {
+    const dim = maxDim || 2;
+    const dist = dim * 2.2;
+    V.camera.near = dim / 100;
+    V.camera.far = dim * 100;
+    V.camera.position.set(dist * 0.7, dist * 0.55, dist);
+    V.camera.updateProjectionMatrix();
+    V.controls.target.set(0, 0, 0);
+    V.controls.update();
+  }
+
+  async function loadModel(url, nameHint) {
+    await initOnce();
+    viewerStatus("Chargement du modèle…");
+    const { THREE, GLTFLoader, STLLoader, OBJLoader } = await loadLibs();
+    const ext = String(nameHint || url).split("?")[0].split(".").pop().toLowerCase();
+    try {
+      if (ext === "glb" || ext === "gltf") {
+        const g = await new GLTFLoader().loadAsync(url);
+        setObject(g.scene);
+      } else if (ext === "stl") {
+        const geo = await new STLLoader().loadAsync(url);
+        geo.computeVertexNormals();
+        const mat = new THREE.MeshStandardMaterial({ color: 0x9ab0ff, metalness: 0.1, roughness: 0.65 });
+        setObject(new THREE.Mesh(geo, mat));
+      } else if (ext === "obj") {
+        const o = await new OBJLoader().loadAsync(url);
+        o.traverse((c) => {
+          if (c.isMesh && (!c.material || !c.material.color)) {
+            c.material = new THREE.MeshStandardMaterial({ color: 0x9ab0ff, metalness: 0.1, roughness: 0.7 });
+          }
+        });
+        setObject(o);
+      } else {
+        throw new Error("Format non supporté : ." + ext);
+      }
+      viewerStatus("");
+    } catch (err) {
+      console.error(err);
+      viewerStatus("Impossible de charger le modèle.\n" + (err && err.message ? err.message : err));
+    }
+  }
+
+  let initFailed = false;
+  async function initOnce() {
+    if (V.inited) { resizeViewer(); return; }
+    try {
+      await initViewer();
+      resizeViewer();
+      startLoop();
+    } catch (err) {
+      initFailed = true;
+      console.error(err);
+      throw err;
+    }
+  }
+
+  async function openViewer(url, title, nameHint) {
+    $("#viewer-title").textContent = title || "Visionneuse 3D";
+    viewerEl.classList.remove("hidden");
+    showReliefControls(false);
+    viewerStatus("Initialisation de la 3D…");
+    try {
+      await initOnce();
+      startLoop();
+      if (url) await loadModel(url, nameHint || url);
+      else viewerStatus('Aucun modèle. Cliquez sur « Charger un fichier » pour en importer un.');
+    } catch (_) {
+      viewerStatus("La bibliothèque 3D n'a pas pu être chargée.\nVérifiez votre connexion internet puis réessayez.");
+    }
+  }
+
+  function closeViewer() { viewerEl.classList.add("hidden"); stopLoop(); }
+
+  function showReliefControls(show) {
+    $("#relief-controls").classList.toggle("hidden", !show);
+  }
+
+  function onViewerFile(e) {
+    const file = e.target.files[0];
+    if (!file) return;
+    showReliefControls(false);
+    const objUrl = URL.createObjectURL(file);
+    loadModel(objUrl, file.name).finally(() => setTimeout(() => URL.revokeObjectURL(objUrl), 4000));
+    $("#viewer-title").textContent = file.name;
+    e.target.value = "";
+  }
+
+  // ---- Conversion image plate -> relief 3D -------------------------------
+  function loadImageEl(src, useCrossOrigin) {
+    return new Promise((resolve, reject) => {
+      const im = new Image();
+      if (useCrossOrigin) im.crossOrigin = "anonymous";
+      im.onload = () => resolve(im);
+      im.onerror = () => reject(new Error("Image introuvable ou inaccessible."));
+      im.src = src;
+    });
+  }
+
+  /** Flou 3×3 séparable sur une grille de hauteurs (réduit le bruit en escalier). */
+  function boxBlur(arr, w, h) {
+    const tmp = new Float32Array(arr.length);
+    for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+      let s = 0, c = 0;
+      for (let d = -1; d <= 1; d++) { const xx = x + d; if (xx >= 0 && xx < w) { s += arr[y * w + xx]; c++; } }
+      tmp[y * w + x] = s / c;
+    }
+    for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+      let s = 0, c = 0;
+      for (let d = -1; d <= 1; d++) { const yy = y + d; if (yy >= 0 && yy < h) { s += tmp[yy * w + x]; c++; } }
+      arr[y * w + x] = s / c;
+    }
+  }
+
+  /** Construit un relief 3D : la luminosité de l'image devient la hauteur.
+   *  Lissage + normalisation du contraste + socle plein (parois + fond). */
+  function buildReliefMesh(img) {
+    const { THREE } = V;
+    const depth = parseFloat($("#relief-depth").value) || 0.45;
+    const resolution = parseInt($("#relief-res").value, 10) || 200;
+    const smooth = parseInt($("#relief-smooth").value, 10) || 0;
+    const invert = $("#relief-invert").checked;
+    const useColor = $("#relief-color").checked;
+    const solid = $("#relief-solid").checked;
+
+    const iw = img.naturalWidth || img.width;
+    const ih = img.naturalHeight || img.height;
+    const scale = resolution / Math.max(iw, ih);
+    const cols = Math.max(2, Math.round(iw * scale));
+    const rows = Math.max(2, Math.round(ih * scale));
+
+    const cv = document.createElement("canvas");
+    cv.width = cols; cv.height = rows;
+    const ctx = cv.getContext("2d", { willReadFrequently: true });
+    ctx.drawImage(img, 0, 0, cols, rows);
+    let data;
+    try {
+      data = ctx.getImageData(0, 0, cols, rows).data;
+    } catch (_) {
+      throw new Error("Image protégée par le serveur d'origine (CORS).\nTéléchargez-la puis utilisez « Image → relief » pour l'importer en local.");
+    }
+
+    // 1) Carte de hauteur à partir de la luminance.
+    const H = new Float32Array(cols * rows);
+    for (let i = 0; i < cols * rows; i++) {
+      const p = i * 4;
+      let lum = (0.299 * data[p] + 0.587 * data[p + 1] + 0.114 * data[p + 2]) / 255;
+      if (invert) lum = 1 - lum;
+      H[i] = lum;
+    }
+    // 2) Lissage.
+    for (let s = 0; s < smooth; s++) boxBlur(H, cols, rows);
+    // 3) Normalisation du contraste (étirement min→max).
+    let mn = Infinity, mx = -Infinity;
+    for (let i = 0; i < H.length; i++) { if (H[i] < mn) mn = H[i]; if (H[i] > mx) mx = H[i]; }
+    const range = (mx - mn) || 1;
+    for (let i = 0; i < H.length; i++) H[i] = (H[i] - mn) / range;
+
+    const aspect = iw / ih;
+    const planeW = aspect >= 1 ? 2 : 2 * aspect;
+    const planeH = aspect >= 1 ? 2 / aspect : 2;
+    const base = solid ? Math.max(0.06, depth * 0.5) : 0; // épaisseur du socle
+    const px = (ix) => (ix / (cols - 1) - 0.5) * planeW;
+    const py = (iy) => (0.5 - iy / (rows - 1)) * planeH;
+
+    const positions = [];
+    const colors = [];
+    const indices = [];
+    const pushColor = (r, g, b) => colors.push(r, g, b);
+    const sideColor = useColor ? [0.32, 0.36, 0.46] : [0.62, 0.69, 0.85];
+
+    // Sommets du dessus.
+    for (let iy = 0; iy < rows; iy++) {
+      for (let ix = 0; ix < cols; ix++) {
+        const i = iy * cols + ix;
+        positions.push(px(ix), py(iy), base + H[i] * depth);
+        if (useColor) { const p = i * 4; pushColor(data[p] / 255, data[p + 1] / 255, data[p + 2] / 255); }
+        else pushColor(0.62, 0.69, 0.85);
+      }
+    }
+    // Faces du dessus.
+    for (let iy = 0; iy < rows - 1; iy++) {
+      for (let ix = 0; ix < cols - 1; ix++) {
+        const a = iy * cols + ix, b = a + 1, c = a + cols, d = c + 1;
+        indices.push(a, c, b, b, c, d);
+      }
+    }
+
+    if (solid) {
+      // Anneau de contour (sens horaire).
+      const ring = [];
+      for (let ix = 0; ix < cols; ix++) ring.push([ix, 0]);
+      for (let iy = 1; iy < rows; iy++) ring.push([cols - 1, iy]);
+      for (let ix = cols - 2; ix >= 0; ix--) ring.push([ix, rows - 1]);
+      for (let iy = rows - 2; iy >= 1; iy--) ring.push([0, iy]);
+
+      const ringBottomStart = positions.length / 3;
+      ring.forEach(([ix, iy]) => { positions.push(px(ix), py(iy), 0); pushColor(...sideColor); });
+
+      const topIndex = (ix, iy) => iy * cols + ix;
+      // Parois latérales.
+      for (let k = 0; k < ring.length; k++) {
+        const k2 = (k + 1) % ring.length;
+        const tA = topIndex(ring[k][0], ring[k][1]);
+        const tB = topIndex(ring[k2][0], ring[k2][1]);
+        const bA = ringBottomStart + k;
+        const bB = ringBottomStart + k2;
+        indices.push(tA, bA, tB, tB, bA, bB);
+      }
+      // Fond plein (rectangle).
+      const c0 = positions.length / 3;
+      [[0, 0], [cols - 1, 0], [cols - 1, rows - 1], [0, rows - 1]].forEach(([ix, iy]) => {
+        positions.push(px(ix), py(iy), 0); pushColor(...sideColor);
+      });
+      indices.push(c0, c0 + 1, c0 + 2, c0, c0 + 2, c0 + 3);
+    }
+
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute("position", new THREE.Float32BufferAttribute(positions, 3));
+    geo.setAttribute("color", new THREE.Float32BufferAttribute(colors, 3));
+    geo.setIndex(indices);
+    geo.computeVertexNormals();
+
+    const mat = new THREE.MeshStandardMaterial({
+      vertexColors: true,
+      side: THREE.DoubleSide,
+      metalness: 0.05, roughness: 0.8,
+    });
+    return new THREE.Mesh(geo, mat);
+  }
+
+  function regenRelief() {
+    if (!V.reliefImg) return;
+    try {
+      viewerStatus("Génération du relief…");
+      setObject(buildReliefMesh(V.reliefImg));
+      viewerStatus("");
+    } catch (err) {
+      console.error(err);
+      viewerStatus(err && err.message ? err.message : "Génération impossible.");
+    }
+  }
+
+  async function openRelief(src, title, useCrossOrigin) {
+    $("#viewer-title").textContent = title || "Relief 3D";
+    viewerEl.classList.remove("hidden");
+    viewerStatus("Initialisation de la 3D…");
+    try {
+      await initOnce();
+      startLoop();
+      showReliefControls(true);
+      const img = await loadImageEl(src, useCrossOrigin);
+      V.reliefImg = img;
+      regenRelief();
+    } catch (err) {
+      showReliefControls(false);
+      viewerStatus(
+        (err && err.message) ? err.message
+        : "La bibliothèque 3D n'a pas pu être chargée.\nVérifiez votre connexion internet."
+      );
+    }
+  }
+
+  function onReliefImageFile(e) {
+    const file = e.target.files[0];
+    if (!file) return;
+    const objUrl = URL.createObjectURL(file);
+    openRelief(objUrl, file.name + " — relief 3D", false)
+      .finally(() => setTimeout(() => URL.revokeObjectURL(objUrl), 4000));
+    e.target.value = "";
+  }
+
+  // ---- Import / Export ---------------------------------------------------
+  function exportJson() {
+    const payload = { categories, products };
+    const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `conceptions-produits-${todayStr()}.json`;
+    a.click();
+    URL.revokeObjectURL(url);
+  }
+
+  function importJson(file) {
+    const reader = new FileReader();
+    reader.onload = () => {
+      try {
+        const data = JSON.parse(reader.result);
+        // Compatible avec l'ancien format (tableau) et le nouveau ({categories, products}).
+        const items = Array.isArray(data) ? data : data.products;
+        if (!Array.isArray(items)) throw new Error("Format attendu : liste de concepts.");
+        products = items.map(normalize);
+        const importedCats = Array.isArray(data.categories) ? data.categories : [];
+        categories = uniqueSorted([...categories, ...importedCats, ...products.map((p) => p.category)]);
+        save();
+        saveCategories();
+        render();
+        toast(`${products.length} concept(s) importé(s)`);
+      } catch (err) {
+        alert("Import impossible : " + err.message);
+      }
+    };
+    reader.readAsText(file);
+  }
+
+  // ---- Utilitaires -------------------------------------------------------
+  let toastTimer;
+  function toast(msg) {
+    const t = $("#toast");
+    t.textContent = msg;
+    t.classList.remove("hidden");
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(() => t.classList.add("hidden"), 2600);
+  }
+
+  function escHtml(s) {
+    return String(s).replace(/[&<>"']/g, (c) =>
+      ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+  }
+  function escAttr(s) { return escHtml(s); }
+
+  // ---- Câblage des événements -------------------------------------------
+  function bind() {
+    $("#btn-new").addEventListener("click", () => openModal(null));
+    $("#modal-close").addEventListener("click", closeModal);
+    $("#btn-cancel").addEventListener("click", closeModal);
+    $("#btn-delete").addEventListener("click", deleteCurrent);
+    $("#f-category").addEventListener("change", onCategoryChange);
+    $("#btn-view3d").addEventListener("click", () => {
+      const name = $("#f-name").value.trim() || "Concept";
+      if (!formModel.data) { toast("Aucun modèle 3D : collez un lien ou importez un fichier"); return; }
+      openViewer(formModel.data, name + " — modèle 3D", formModel.name);
+    });
+    $("#btn-relief").addEventListener("click", () => {
+      const name = $("#f-name").value.trim() || "Concept";
+      if (!formImage) { toast("Ajoutez d'abord une image / esquisse (lien ou import)"); return; }
+      openRelief(formImage, name + " — relief 3D", !isDataUrl(formImage));
+    });
+    $("#f-image").addEventListener("input", (e) => { formImage = e.target.value.trim(); updateImagePreview(); });
+    $("#f-model").addEventListener("input", (e) => { formModel = { data: e.target.value.trim(), name: "" }; updateModelInfo(); });
+    $("#f-image-file").addEventListener("change", onImageFile);
+    $("#f-model-file").addEventListener("change", onModelFile);
+    $("#f-image-preview").addEventListener("click", (e) => {
+      if (e.target.closest("[data-remove-image]")) { formImage = ""; $("#f-image").value = ""; updateImagePreview(); }
+    });
+    $("#f-model-name").addEventListener("click", (e) => {
+      if (e.target.closest("[data-remove-model]")) { formModel = { data: "", name: "" }; $("#f-model").value = ""; updateModelInfo(); }
+    });
+    form.addEventListener("submit", submitForm);
+    modal.addEventListener("click", (e) => { if (e.target === modal) closeModal(); });
+
+    $("#btn-categories").addEventListener("click", openCatModal);
+    $("#cat-close").addEventListener("click", closeCatModal);
+    $("#cat-form").addEventListener("submit", addCategory);
+    catModal.addEventListener("click", (e) => { if (e.target === catModal) closeCatModal(); });
+
+    $("#viewer-close").addEventListener("click", closeViewer);
+    $("#viewer-reset").addEventListener("click", () => { if (V.current) frameCurrent(); });
+    $("#viewer-file").addEventListener("change", onViewerFile);
+    $("#viewer-image-file").addEventListener("change", onReliefImageFile);
+    $("#relief-depth").addEventListener("input", regenRelief);
+    $("#relief-res").addEventListener("change", regenRelief);
+    $("#relief-smooth").addEventListener("input", regenRelief);
+    $("#relief-solid").addEventListener("change", regenRelief);
+    $("#relief-invert").addEventListener("change", regenRelief);
+    $("#relief-color").addEventListener("change", regenRelief);
+    viewerEl.addEventListener("click", (e) => { if (e.target === viewerEl) closeViewer(); });
+
+    document.addEventListener("keydown", (e) => {
+      if (e.key !== "Escape") return;
+      if (!viewerEl.classList.contains("hidden")) closeViewer();
+      else if (!catModal.classList.contains("hidden")) closeCatModal();
+      else if (!modal.classList.contains("hidden")) closeModal();
+    });
+
+    searchEl.addEventListener("input", renderView);
+    filterCat.addEventListener("change", renderView);
+    filterPrio.addEventListener("change", renderView);
+    sortEl.addEventListener("change", renderView);
+
+    document.querySelectorAll(".viewtab").forEach((b) =>
+      b.addEventListener("click", () => setView(b.dataset.view)));
+
+    $("#btn-export").addEventListener("click", exportJson);
+    $("#btn-import").addEventListener("click", () => $("#file-input").click());
+    $("#file-input").addEventListener("change", (e) => {
+      if (e.target.files[0]) importJson(e.target.files[0]);
+      e.target.value = "";
+    });
+  }
+
+  // ---- Démarrage ---------------------------------------------------------
+  load();
+  bind();
+  render();
+})();
