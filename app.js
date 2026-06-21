@@ -612,6 +612,7 @@
   async function openViewer(url, title) {
     $("#viewer-title").textContent = title || "Visionneuse 3D";
     viewerEl.classList.remove("hidden");
+    showReliefControls(false);
     viewerStatus("Initialisation de la 3D…");
     try {
       await initOnce();
@@ -625,12 +626,127 @@
 
   function closeViewer() { viewerEl.classList.add("hidden"); stopLoop(); }
 
+  function showReliefControls(show) {
+    $("#relief-controls").classList.toggle("hidden", !show);
+  }
+
   function onViewerFile(e) {
     const file = e.target.files[0];
     if (!file) return;
+    showReliefControls(false);
     const objUrl = URL.createObjectURL(file);
     loadModel(objUrl, file.name).finally(() => setTimeout(() => URL.revokeObjectURL(objUrl), 4000));
     $("#viewer-title").textContent = file.name;
+    e.target.value = "";
+  }
+
+  // ---- Conversion image plate -> relief 3D -------------------------------
+  function loadImageEl(src, useCrossOrigin) {
+    return new Promise((resolve, reject) => {
+      const im = new Image();
+      if (useCrossOrigin) im.crossOrigin = "anonymous";
+      im.onload = () => resolve(im);
+      im.onerror = () => reject(new Error("Image introuvable ou inaccessible."));
+      im.src = src;
+    });
+  }
+
+  /** Construit un maillage en relief : la luminosité de l'image devient la hauteur. */
+  function buildReliefMesh(img) {
+    const { THREE } = V;
+    const depth = parseFloat($("#relief-depth").value) || 0.45;
+    const resolution = parseInt($("#relief-res").value, 10) || 200;
+    const invert = $("#relief-invert").checked;
+    const useColor = $("#relief-color").checked;
+
+    const iw = img.naturalWidth || img.width;
+    const ih = img.naturalHeight || img.height;
+    const scale = resolution / Math.max(iw, ih);
+    const gw = Math.max(2, Math.round(iw * scale));
+    const gh = Math.max(2, Math.round(ih * scale));
+
+    const cv = document.createElement("canvas");
+    cv.width = gw; cv.height = gh;
+    const ctx = cv.getContext("2d", { willReadFrequently: true });
+    ctx.drawImage(img, 0, 0, gw, gh);
+    let data;
+    try {
+      data = ctx.getImageData(0, 0, gw, gh).data;
+    } catch (_) {
+      throw new Error("Image protégée par le serveur d'origine (CORS).\nTéléchargez-la puis utilisez « Image → relief » pour l'importer en local.");
+    }
+
+    const segX = gw - 1, segY = gh - 1;
+    const aspect = iw / ih;
+    const planeW = aspect >= 1 ? 2 : 2 * aspect;
+    const planeH = aspect >= 1 ? 2 / aspect : 2;
+
+    const geo = new THREE.PlaneGeometry(planeW, planeH, segX, segY);
+    const pos = geo.attributes.position;
+    const colors = useColor ? new Float32Array(pos.count * 3) : null;
+
+    for (let iy = 0; iy <= segY; iy++) {
+      for (let ix = 0; ix <= segX; ix++) {
+        const vi = iy * (segX + 1) + ix;
+        const p = (iy * gw + ix) * 4;
+        const r = data[p], g = data[p + 1], b = data[p + 2];
+        let lum = (0.299 * r + 0.587 * g + 0.114 * b) / 255;
+        if (invert) lum = 1 - lum;
+        pos.setZ(vi, lum * depth);
+        if (colors) { colors[vi * 3] = r / 255; colors[vi * 3 + 1] = g / 255; colors[vi * 3 + 2] = b / 255; }
+      }
+    }
+    if (colors) geo.setAttribute("color", new THREE.BufferAttribute(colors, 3));
+    pos.needsUpdate = true;
+    geo.computeVertexNormals();
+
+    const mat = new THREE.MeshStandardMaterial({
+      color: useColor ? 0xffffff : 0x9fb2da,
+      vertexColors: !!useColor,
+      side: THREE.DoubleSide,
+      metalness: 0.05, roughness: 0.85,
+    });
+    return new THREE.Mesh(geo, mat);
+  }
+
+  function regenRelief() {
+    if (!V.reliefImg) return;
+    try {
+      viewerStatus("Génération du relief…");
+      setObject(buildReliefMesh(V.reliefImg));
+      viewerStatus("");
+    } catch (err) {
+      console.error(err);
+      viewerStatus(err && err.message ? err.message : "Génération impossible.");
+    }
+  }
+
+  async function openRelief(src, title, useCrossOrigin) {
+    $("#viewer-title").textContent = title || "Relief 3D";
+    viewerEl.classList.remove("hidden");
+    viewerStatus("Initialisation de la 3D…");
+    try {
+      await initOnce();
+      startLoop();
+      showReliefControls(true);
+      const img = await loadImageEl(src, useCrossOrigin);
+      V.reliefImg = img;
+      regenRelief();
+    } catch (err) {
+      showReliefControls(false);
+      viewerStatus(
+        (err && err.message) ? err.message
+        : "La bibliothèque 3D n'a pas pu être chargée.\nVérifiez votre connexion internet."
+      );
+    }
+  }
+
+  function onReliefImageFile(e) {
+    const file = e.target.files[0];
+    if (!file) return;
+    const objUrl = URL.createObjectURL(file);
+    openRelief(objUrl, file.name + " — relief 3D", false)
+      .finally(() => setTimeout(() => URL.revokeObjectURL(objUrl), 4000));
     e.target.value = "";
   }
 
@@ -695,6 +811,12 @@
       const url = $("#f-model").value.trim();
       openViewer(url, ($("#f-name").value.trim() || "Concept") + " — modèle 3D");
     });
+    $("#btn-relief").addEventListener("click", () => {
+      const img = $("#f-image").value.trim();
+      const name = $("#f-name").value.trim() || "Concept";
+      if (!img) { toast("Renseignez d'abord une image / esquisse, ou utilisez « Image → relief » dans la visionneuse"); return; }
+      openRelief(img, name + " — relief 3D", true);
+    });
     form.addEventListener("submit", submitForm);
     modal.addEventListener("click", (e) => { if (e.target === modal) closeModal(); });
 
@@ -706,6 +828,11 @@
     $("#viewer-close").addEventListener("click", closeViewer);
     $("#viewer-reset").addEventListener("click", () => { if (V.current) frameCurrent(); });
     $("#viewer-file").addEventListener("change", onViewerFile);
+    $("#viewer-image-file").addEventListener("change", onReliefImageFile);
+    $("#relief-depth").addEventListener("input", regenRelief);
+    $("#relief-res").addEventListener("change", regenRelief);
+    $("#relief-invert").addEventListener("change", regenRelief);
+    $("#relief-color").addEventListener("change", regenRelief);
     viewerEl.addEventListener("click", (e) => { if (e.target === viewerEl) closeViewer(); });
 
     document.addEventListener("keydown", (e) => {

@@ -241,8 +241,24 @@ input:focus, select:focus, textarea:focus { outline: 2px solid var(--primary); o
 .form-row.milestones .field { margin-bottom: 0; }
 
 /* Ligne modèle 3D */
-.model-row .model-actions { justify-content: flex-end; }
+.model-row .model-actions { justify-content: flex-end; gap: 8px; }
 .model-actions .btn { width: 100%; }
+
+/* Barre de réglages du relief 3D */
+.relief-controls {
+  display: flex; align-items: center; flex-wrap: wrap; gap: 18px;
+  padding: 12px 18px;
+  border-bottom: 1px solid var(--border);
+  background: #11141b;
+  font-size: 13px; color: var(--text-dim);
+}
+.relief-controls label { display: flex; align-items: center; gap: 8px; }
+.relief-controls input[type="range"] { accent-color: var(--primary); }
+.relief-controls select {
+  padding: 6px 10px; border-radius: 8px;
+  border: 1px solid var(--border); background: var(--surface-2); color: var(--text);
+}
+.relief-check { color: var(--text); }
 
 /* Badges de jalon sur les cartes */
 .card-milestones { display: flex; flex-wrap: wrap; gap: 6px; margin: 0 0 8px; }
