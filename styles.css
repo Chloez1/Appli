@@ -230,6 +230,85 @@ input:focus, select:focus, textarea:focus { outline: 2px solid var(--primary); o
 
 .hidden { display: none !important; }
 
+/* Jalons (dates) dans le formulaire */
+.form-row.milestones {
+  background: #11141b;
+  border: 1px dashed var(--border);
+  border-radius: 12px;
+  padding: 12px 14px;
+  margin-bottom: 14px;
+}
+.form-row.milestones .field { margin-bottom: 0; }
+
+/* Ligne modèle 3D */
+.model-row .model-actions { justify-content: flex-end; }
+.model-actions .btn { width: 100%; }
+
+/* Badges de jalon sur les cartes */
+.card-milestones { display: flex; flex-wrap: wrap; gap: 6px; margin: 0 0 8px; }
+.milestone {
+  font-size: 11px; font-weight: 600;
+  padding: 3px 8px; border-radius: 999px;
+  border: 1px solid var(--border);
+}
+.milestone.validated { color: #b6f0d2; background: #11241b; border-color: #2a5a3a; }
+.milestone.launched { color: #a9f0e6; background: #0f2522; border-color: #1f5a52; }
+.badge-3d {
+  font-size: 11px; font-weight: 700; letter-spacing: .3px;
+  padding: 3px 8px; border-radius: 999px;
+  color: #d9c7ff; background: #1c1430; border: 1px solid #3a2a5a;
+}
+
+/* Gestionnaire de catégories */
+.cat-card { width: min(480px, 100%); }
+.cat-add { display: flex; gap: 10px; margin-bottom: 16px; }
+.cat-add input {
+  flex: 1; padding: 10px 12px; border-radius: 10px;
+  border: 1px solid var(--border); background: var(--surface-2);
+  color: var(--text); font-size: 14px;
+}
+.cat-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+.cat-list li {
+  display: flex; align-items: center; gap: 10px;
+  padding: 10px 12px; border: 1px solid var(--border);
+  border-radius: 10px; background: var(--surface-2);
+}
+.cat-list .cat-name { flex: 1; font-weight: 600; }
+.cat-list .cat-usage { color: var(--text-dim); font-size: 12px; }
+.cat-list .cat-del {
+  background: transparent; border: none; color: var(--danger);
+  cursor: pointer; font-size: 16px; padding: 2px 6px; border-radius: 6px;
+}
+.cat-list .cat-del:hover { background: rgba(255,107,107,0.12); }
+.cat-list .cat-del:disabled { color: var(--text-dim); cursor: not-allowed; opacity: .5; }
+
+/* Visionneuse 3D */
+.viewer-card {
+  width: min(960px, 100%);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  box-shadow: var(--shadow);
+  overflow: hidden;
+}
+.viewer-tools { display: flex; align-items: center; gap: 8px; }
+.viewer-canvas {
+  position: relative;
+  width: 100%; height: min(64vh, 620px);
+  background: radial-gradient(60% 60% at 50% 35%, #232a3a 0%, #0c0e13 100%);
+}
+.viewer-canvas canvas { display: block; width: 100%; height: 100%; }
+.viewer-status {
+  position: absolute; inset: 0;
+  display: grid; place-items: center;
+  color: var(--text-dim); font-size: 14px; text-align: center;
+  padding: 20px; pointer-events: none;
+}
+.viewer-hint {
+  padding: 12px 18px; color: var(--text-dim);
+  font-size: 12px; border-top: 1px solid var(--border); text-align: center;
+}
+
 @media (max-width: 1100px) {
   .board { grid-template-columns: repeat(5, minmax(220px, 1fr)); }
 }

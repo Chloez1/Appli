@@ -6,6 +6,15 @@
   <title>Studio de Conception de Produits</title>
   <link rel="stylesheet" href="styles.css" />
   <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🧩</text></svg>" />
+  <!-- Carte d'import pour charger Three.js à la demande dans la visionneuse 3D -->
+  <script type="importmap">
+  {
+    "imports": {
+      "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+      "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+    }
+  }
+  </script>
 </head>
 <body>
   <header class="app-header">
@@ -17,6 +26,7 @@
       </div>
     </div>
     <div class="header-actions">
+      <button id="btn-categories" class="btn btn-ghost" title="Gérer les catégories">Catégories</button>
       <button id="btn-import" class="btn btn-ghost" title="Importer un fichier JSON">Importer</button>
       <button id="btn-export" class="btn btn-ghost" title="Exporter en JSON">Exporter</button>
       <button id="btn-new" class="btn btn-primary">+ Nouveau concept</button>
@@ -64,8 +74,7 @@
           </label>
           <label class="field">
             <span>Catégorie</span>
-            <input type="text" id="f-category" list="category-list" placeholder="Ex. Mobilier, Électronique…" />
-            <datalist id="category-list"></datalist>
+            <select id="f-category"></select>
           </label>
         </div>
 
@@ -94,6 +103,18 @@
           </label>
         </div>
 
+        <!-- Jalons : dates de validation et de lancement -->
+        <div class="form-row milestones">
+          <label class="field">
+            <span>✅ Date de validation</span>
+            <input type="date" id="f-validatedAt" />
+          </label>
+          <label class="field">
+            <span>🚀 Date de lancement</span>
+            <input type="date" id="f-launchedAt" />
+          </label>
+        </div>
+
         <label class="field">
           <span>Description / concept</span>
           <textarea id="f-description" rows="3" placeholder="Le problème résolu, le parti pris de design, l'usage…"></textarea>
@@ -110,6 +131,17 @@
           </label>
         </div>
 
+        <div class="form-row model-row">
+          <label class="field">
+            <span>Modèle 3D importé (URL .glb, .gltf, .stl, .obj)</span>
+            <input type="url" id="f-model" placeholder="https://… ou laissez vide" />
+          </label>
+          <div class="field model-actions">
+            <span>&nbsp;</span>
+            <button type="button" id="btn-view3d" class="btn btn-ghost">🧊 Voir en 3D</button>
+          </div>
+        </div>
+
         <label class="field">
           <span>Notes de conception</span>
           <textarea id="f-notes" rows="2" placeholder="Contraintes, retours, prochaines étapes…"></textarea>
@@ -122,6 +154,44 @@
           <button type="submit" class="btn btn-primary">Enregistrer</button>
         </div>
       </form>
+    </div>
+  </div>
+
+  <!-- Gestionnaire de catégories -->
+  <div id="cat-modal" class="modal hidden" role="dialog" aria-modal="true">
+    <div class="modal-card cat-card">
+      <div class="modal-head">
+        <h2>Catégories de produits</h2>
+        <button id="cat-close" class="icon-btn" aria-label="Fermer">✕</button>
+      </div>
+      <div class="form">
+        <form id="cat-form" class="cat-add">
+          <input type="text" id="cat-input" placeholder="Nouvelle catégorie…" maxlength="40" />
+          <button type="submit" class="btn btn-primary">Ajouter</button>
+        </form>
+        <ul id="cat-list" class="cat-list"></ul>
+      </div>
+    </div>
+  </div>
+
+  <!-- Visionneuse 3D -->
+  <div id="viewer" class="modal hidden" role="dialog" aria-modal="true">
+    <div class="viewer-card">
+      <div class="modal-head">
+        <h2 id="viewer-title">Visionneuse 3D</h2>
+        <div class="viewer-tools">
+          <label class="btn btn-ghost" title="Charger un modèle depuis votre ordinateur">
+            Charger un fichier
+            <input id="viewer-file" type="file" accept=".glb,.gltf,.stl,.obj" hidden />
+          </label>
+          <button id="viewer-reset" class="btn btn-ghost" title="Recentrer la vue">Recentrer</button>
+          <button id="viewer-close" class="icon-btn" aria-label="Fermer">✕</button>
+        </div>
+      </div>
+      <div id="viewer-canvas" class="viewer-canvas">
+        <div id="viewer-status" class="viewer-status">Aucun modèle chargé.</div>
+      </div>
+      <div class="viewer-hint">Glissez pour pivoter · molette pour zoomer · clic droit (ou deux doigts) pour déplacer</div>
     </div>
   </div>
 
