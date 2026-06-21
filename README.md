@@ -6,6 +6,12 @@ jusqu'au lancement. Aucune installation, aucune dépendance : il suffit d'ouvrir
 
 ## Fonctionnalités
 
+- **4 vues** commutables d'un clic :
+  - **Tableau** (Kanban) en 5 étapes avec glisser-déposer ;
+  - **Galerie** : grille visuelle de cartes avec grandes vignettes ;
+  - **Chronologie** : fil d'activité des jalons (créé / validé / lancé) par mois ;
+  - **Tableau de bord** : indicateurs clés et graphiques (par étape, catégorie, priorité).
+- **Interface premium** : police Inter/Sora, dégradés, animations et finitions soignées.
 - **Tableau Kanban** en 5 étapes : Idée → Conception → Prototype → Validé → Lancé.
 - **Glisser-déposer** des fiches d'une étape à l'autre.
 - **Jalons datés** : enregistrement automatique de la **date de validation** et de

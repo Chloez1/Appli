@@ -123,7 +123,6 @@
 
   // ---- Éléments DOM ------------------------------------------------------
   const $ = (sel) => document.querySelector(sel);
-  const board = $("#board");
   const statsEl = $("#stats");
   const searchEl = $("#search");
   const filterCat = $("#filter-category");
@@ -133,6 +132,9 @@
   const form = $("#form");
   const catModal = $("#cat-modal");
   const viewerEl = $("#viewer");
+  const viewEl = $("#view");
+  const toolbarEl = $("#toolbar");
+  let currentView = "board";
 
   // ---- Helpers -----------------------------------------------------------
   function uniqueSorted(arr) {
@@ -175,7 +177,35 @@
   function render() {
     renderStats();
     renderFilterCategories();
-    renderBoard();
+    renderView();
+  }
+
+  function renderView() {
+    // La barre de filtres ne sert qu'aux vues liste (tableau / galerie).
+    const filterable = currentView === "board" || currentView === "gallery";
+    toolbarEl.classList.toggle("hidden", !filterable);
+    viewEl.dataset.view = currentView;
+    if (currentView === "gallery") renderGallery();
+    else if (currentView === "timeline") renderTimeline();
+    else if (currentView === "dashboard") renderDashboard();
+    else renderBoard();
+  }
+
+  function setView(view) {
+    currentView = view;
+    document.querySelectorAll(".viewtab").forEach((b) =>
+      b.classList.toggle("active", b.dataset.view === view));
+    renderView();
+  }
+
+  function emptyState(msg) {
+    const div = document.createElement("div");
+    div.className = "empty-state";
+    div.innerHTML = `<div class="empty-emoji">🧩</div>
+      <p>${escHtml(msg || "Aucun concept pour l'instant.")}</p>
+      <button class="btn btn-primary" id="empty-new">+ Nouveau concept</button>`;
+    div.querySelector("#empty-new").addEventListener("click", () => openModal(null));
+    return div;
   }
 
   function renderStats() {
@@ -204,7 +234,8 @@
 
   function renderBoard() {
     const visible = getVisible();
-    board.innerHTML = "";
+    const grid = document.createElement("div");
+    grid.className = "board";
     for (const stage of STAGES) {
       const items = visible.filter((p) => p.status === stage.id);
       const col = document.createElement("div");
@@ -221,11 +252,162 @@
       if (items.length === 0) {
         body.innerHTML = '<div class="empty-col">Aucun concept</div>';
       } else {
-        items.forEach((p) => body.appendChild(cardEl(p)));
+        items.forEach((p, i) => {
+          const c = cardEl(p);
+          c.style.animationDelay = (i * 28) + "ms";
+          body.appendChild(c);
+        });
       }
       attachDnd(col, stage.id);
-      board.appendChild(col);
+      grid.appendChild(col);
     }
+    viewEl.replaceChildren(grid);
+  }
+
+  // ---- Vue Galerie -------------------------------------------------------
+  function renderGallery() {
+    const visible = getVisible();
+    if (!visible.length) { viewEl.replaceChildren(emptyState("Aucun concept ne correspond à votre recherche.")); return; }
+    const grid = document.createElement("div");
+    grid.className = "gallery";
+    visible.forEach((p, i) => {
+      const c = galleryCard(p);
+      c.style.animationDelay = (i * 24) + "ms";
+      grid.appendChild(c);
+    });
+    viewEl.replaceChildren(grid);
+  }
+
+  function galleryCard(p) {
+    const el = document.createElement("article");
+    el.className = "gcard";
+    el.dataset.id = p.id;
+    const stage = STAGES.find((s) => s.id === p.status);
+    const media = p.image
+      ? `<img src="${escAttr(p.image)}" alt="" onerror="this.parentNode.classList.add('noimg')">`
+      : "";
+    const badge3d = p.model3d ? `<button class="badge-3d" data-3d>🧊 3D</button>` : "";
+    const cost = Number(p.cost) > 0 ? `<span class="gcost">${Number(p.cost).toFixed(0)} €</span>` : "";
+    el.innerHTML = `
+      <div class="gmedia ${p.image ? "" : "noimg"}">
+        ${media}
+        <span class="gstage" style="--c:${stage.color}">${stage.label}</span>
+        ${badge3d}
+      </div>
+      <div class="gbody">
+        <h3 class="gtitle">${escHtml(p.name)}</h3>
+        ${p.description ? `<p class="gdesc">${escHtml(p.description)}</p>` : ""}
+        <div class="gmeta">
+          ${p.category ? `<span class="tag cat">${escHtml(p.category)}</span>` : ""}
+          <span class="tag prio-${p.priority}">${p.priority}</span>
+          ${cost}
+        </div>
+      </div>`;
+    el.addEventListener("click", (e) => {
+      if (e.target.closest("[data-3d]")) { e.stopPropagation(); openViewer(p.model3d, `${p.name} — modèle 3D`, p.model3dName); return; }
+      openModal(p.id);
+    });
+    return el;
+  }
+
+  // ---- Vue Chronologie ---------------------------------------------------
+  function renderTimeline() {
+    const events = [];
+    products.forEach((p) => {
+      const created = p.createdAt ? new Date(p.createdAt).toISOString().slice(0, 10) : "";
+      if (created) events.push({ date: created, type: "created", p });
+      if (p.validatedAt) events.push({ date: p.validatedAt, type: "validated", p });
+      if (p.launchedAt) events.push({ date: p.launchedAt, type: "launched", p });
+    });
+    if (!events.length) { viewEl.replaceChildren(emptyState("Aucun événement à afficher.")); return; }
+    events.sort((a, b) => (a.date < b.date ? 1 : a.date > b.date ? -1 : 0));
+
+    const meta = {
+      created: { label: "Concept créé", color: "var(--col-design)", icon: "✦" },
+      validated: { label: "Validé", color: "var(--col-validated)", icon: "✅" },
+      launched: { label: "Lancé", color: "var(--col-launched)", icon: "🚀" },
+    };
+    const wrap = document.createElement("div");
+    wrap.className = "timeline";
+    let lastMonth = "";
+    events.forEach((e, i) => {
+      const m = e.date.slice(0, 7);
+      if (m !== lastMonth) {
+        lastMonth = m;
+        const h = document.createElement("div");
+        h.className = "tl-month";
+        h.textContent = new Date(e.date).toLocaleDateString("fr-FR", { month: "long", year: "numeric" });
+        wrap.appendChild(h);
+      }
+      const mt = meta[e.type];
+      const item = document.createElement("div");
+      item.className = "tl-item";
+      item.style.animationDelay = (i * 20) + "ms";
+      item.innerHTML = `
+        <span class="tl-dot" style="background:${mt.color}"></span>
+        <div class="tl-card">
+          <div class="tl-top"><span class="tl-type">${mt.icon} ${mt.label}</span><span class="tl-date">${formatDate(e.date)}</span></div>
+          <div class="tl-name">${escHtml(e.p.name)}</div>
+          ${e.p.category ? `<span class="tag cat">${escHtml(e.p.category)}</span>` : ""}
+        </div>`;
+      item.querySelector(".tl-card").addEventListener("click", () => openModal(e.p.id));
+      wrap.appendChild(item);
+    });
+    viewEl.replaceChildren(wrap);
+  }
+
+  // ---- Vue Tableau de bord ----------------------------------------------
+  function renderDashboard() {
+    const total = products.length;
+    const wrap = document.createElement("div");
+    wrap.className = "dashboard";
+    if (!total) { viewEl.replaceChildren(emptyState("Ajoutez des concepts pour voir vos statistiques.")); return; }
+
+    const launched = products.filter((p) => p.status === "launched").length;
+    const validated = products.filter((p) => p.status === "validated").length;
+    const costs = products.map((p) => Number(p.cost) || 0).filter((c) => c > 0);
+    const avg = costs.length ? costs.reduce((a, b) => a + b, 0) / costs.length : 0;
+    const launchRate = total ? Math.round((launched / total) * 100) : 0;
+
+    const tiles = [
+      { v: total, l: "Concepts", s: "🧩" },
+      { v: validated, l: "Validés", s: "✅" },
+      { v: launched, l: "Lancés", s: "🚀" },
+      { v: launchRate + " %", l: "Taux de lancement", s: "📈" },
+      { v: avg ? avg.toFixed(0) + " €" : "—", l: "Coût cible moyen", s: "💶" },
+    ];
+    const kpi = `<div class="kpi-grid">${tiles.map((t) =>
+      `<div class="kpi"><div class="kpi-emoji">${t.s}</div><div class="kpi-v">${t.v}</div><div class="kpi-l">${t.l}</div></div>`).join("")}</div>`;
+
+    const stageItems = STAGES.map((s) => ({ label: s.label, value: products.filter((p) => p.status === s.id).length, color: s.color }));
+    const prioColors = { Haute: "#ff6b6b", Moyenne: "#f6c453", Basse: "#4dd599" };
+    const prioItems = ["Haute", "Moyenne", "Basse"].map((pr) => ({ label: pr, value: products.filter((p) => p.priority === pr).length, color: prioColors[pr] }));
+    const catCounts = {};
+    products.forEach((p) => { const c = p.category || "Sans catégorie"; catCounts[c] = (catCounts[c] || 0) + 1; });
+    const catItems = Object.entries(catCounts).sort((a, b) => b[1] - a[1]).slice(0, 8)
+      .map(([label, value], i) => ({ label, value, color: `hsl(${(i * 47) % 360} 70% 62%)` }));
+
+    wrap.innerHTML = `
+      ${kpi}
+      <div class="panels">
+        <div class="panel">${barChart("Répartition par étape", stageItems)}</div>
+        <div class="panel">${barChart("Par catégorie", catItems)}</div>
+        <div class="panel">${barChart("Par priorité", prioItems)}</div>
+      </div>`;
+    viewEl.replaceChildren(wrap);
+  }
+
+  function barChart(title, items) {
+    const max = Math.max(1, ...items.map((i) => i.value));
+    const rows = items.map((it) => {
+      const pct = Math.round((it.value / max) * 100);
+      return `<div class="bar-row">
+        <span class="bar-label" title="${escAttr(it.label)}">${escHtml(it.label)}</span>
+        <div class="bar-track"><div class="bar-fill" style="width:${pct}%;background:${it.color}"></div></div>
+        <span class="bar-val">${it.value}</span>
+      </div>`;
+    }).join("");
+    return `<h3 class="panel-title">${escHtml(title)}</h3><div class="bars">${rows || '<p class="muted">Aucune donnée.</p>'}</div>`;
   }
 
   function cardEl(p) {
@@ -1035,10 +1217,13 @@
       else if (!modal.classList.contains("hidden")) closeModal();
     });
 
-    searchEl.addEventListener("input", renderBoard);
-    filterCat.addEventListener("change", renderBoard);
-    filterPrio.addEventListener("change", renderBoard);
-    sortEl.addEventListener("change", renderBoard);
+    searchEl.addEventListener("input", renderView);
+    filterCat.addEventListener("change", renderView);
+    filterPrio.addEventListener("change", renderView);
+    sortEl.addEventListener("change", renderView);
+
+    document.querySelectorAll(".viewtab").forEach((b) =>
+      b.addEventListener("click", () => setView(b.dataset.view)));
 
     $("#btn-export").addEventListener("click", exportJson);
     $("#btn-import").addEventListener("click", () => $("#file-input").click());
