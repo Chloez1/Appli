@@ -24,6 +24,10 @@ jusqu'au lancement. Aucune installation, aucune dépendance : il suffit d'ouvrir
   réutilisée dans le formulaire et les filtres.
 - **Fiche concept** complète : nom, catégorie, priorité, coût cible, description,
   matériaux, image/esquisse, modèle 3D et notes de conception.
+- **Import de fichiers dans la fiche** : pour l'image et le modèle 3D, on peut
+  coller un lien **ou importer un fichier** depuis l'ordinateur. Les fichiers sont
+  conservés localement (les images sont redimensionnées automatiquement). Une image
+  importée localement permet aussi de générer le relief 3D sans blocage CORS.
 - **Recherche** plein texte et **filtres** par catégorie et priorité.
 - **Tri** par date de modification, de création, nom ou priorité.
 - **Tableau de bord** : concepts au total, en cours, validés, lancés.

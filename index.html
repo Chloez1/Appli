@@ -126,15 +126,27 @@
             <input type="text" id="f-materials" placeholder="Aluminium, chêne, verre…" />
           </label>
           <label class="field">
-            <span>Image / esquisse (URL)</span>
-            <input type="url" id="f-image" placeholder="https://…" />
+            <span>Image / esquisse</span>
+            <div class="input-with-btn">
+              <input type="url" id="f-image" placeholder="Lien https://… ou importez un fichier" />
+              <label class="btn btn-ghost file-btn" title="Importer une image depuis votre ordinateur">
+                Importer<input type="file" id="f-image-file" accept="image/*" hidden />
+              </label>
+            </div>
+            <div id="f-image-preview" class="img-preview hidden"></div>
           </label>
         </div>
 
         <div class="form-row model-row">
           <label class="field">
-            <span>Modèle 3D importé (URL .glb, .gltf, .stl, .obj)</span>
-            <input type="url" id="f-model" placeholder="https://… ou laissez vide" />
+            <span>Modèle 3D (.glb, .gltf, .stl, .obj)</span>
+            <div class="input-with-btn">
+              <input type="url" id="f-model" placeholder="Lien https://… ou importez un fichier" />
+              <label class="btn btn-ghost file-btn" title="Importer un modèle 3D depuis votre ordinateur">
+                Importer<input type="file" id="f-model-file" accept=".glb,.gltf,.stl,.obj" hidden />
+              </label>
+            </div>
+            <div id="f-model-name" class="file-name hidden"></div>
           </label>
           <div class="field model-actions">
             <span>&nbsp;</span>

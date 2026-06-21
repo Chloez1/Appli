@@ -24,6 +24,9 @@
   /** @type {string[]} */
   let categories = [];
   let editingId = null;
+  // Valeurs en cours d'édition pour les fichiers (lien OU fichier importé en data URL).
+  let formImage = "";
+  let formModel = { data: "", name: "" };
 
   // ---- Persistance -------------------------------------------------------
   function load() {
@@ -53,7 +56,10 @@
 
   function save() {
     try { localStorage.setItem(STORAGE_KEY, JSON.stringify(products)); }
-    catch (e) { console.warn("Écriture dans le stockage impossible.", e); }
+    catch (e) {
+      console.warn("Écriture dans le stockage impossible.", e);
+      toast("⚠️ Stockage du navigateur plein : un fichier importé est peut-être trop volumineux.");
+    }
   }
   function saveCategories() {
     try { localStorage.setItem(CATS_KEY, JSON.stringify(categories)); }
@@ -72,6 +78,7 @@
       materials: Array.isArray(p.materials) ? p.materials : [],
       image: p.image || "",
       model3d: p.model3d || "",
+      model3dName: p.model3dName || "",
       validatedAt: p.validatedAt || "",
       launchedAt: p.launchedAt || "",
       notes: p.notes || "",
@@ -257,7 +264,7 @@
     el.addEventListener("click", (e) => {
       if (e.target.closest("[data-3d]")) {
         e.stopPropagation();
-        openViewer(p.model3d, `${p.name} — modèle 3D`);
+        openViewer(p.model3d, `${p.name} — modèle 3D`, p.model3dName);
         return;
       }
       openModal(p.id);
@@ -314,6 +321,86 @@
     sel.value = selectedValue || "";
   }
 
+  // ---- Import de fichiers dans la fiche (image & modèle 3D) --------------
+  function isDataUrl(s) { return /^data:/i.test(s || ""); }
+
+  /** Redimensionne une image importée pour limiter le poids stocké. */
+  function downscaleImage(file, maxDim) {
+    return new Promise((resolve, reject) => {
+      const objUrl = URL.createObjectURL(file);
+      const im = new Image();
+      im.onload = () => {
+        URL.revokeObjectURL(objUrl);
+        const scale = Math.min(1, maxDim / Math.max(im.width, im.height));
+        const w = Math.max(1, Math.round(im.width * scale));
+        const h = Math.max(1, Math.round(im.height * scale));
+        const cv = document.createElement("canvas");
+        cv.width = w; cv.height = h;
+        cv.getContext("2d").drawImage(im, 0, 0, w, h);
+        const type = file.type === "image/png" ? "image/png" : "image/jpeg";
+        resolve(cv.toDataURL(type, 0.85));
+      };
+      im.onerror = () => { URL.revokeObjectURL(objUrl); reject(new Error("Image illisible.")); };
+      im.src = objUrl;
+    });
+  }
+
+  function updateImagePreview() {
+    const prev = $("#f-image-preview");
+    if (formImage) {
+      prev.classList.remove("hidden");
+      prev.innerHTML = `<img src="${escAttr(formImage)}" alt="" onerror="this.style.opacity=0.3">
+        <button type="button" class="img-remove" data-remove-image>Retirer</button>`;
+    } else {
+      prev.classList.add("hidden");
+      prev.innerHTML = "";
+    }
+  }
+
+  function updateModelInfo() {
+    const el = $("#f-model-name");
+    if (formModel.data) {
+      const label = isDataUrl(formModel.data) ? (formModel.name || "modèle importé") : formModel.data;
+      el.classList.remove("hidden");
+      el.innerHTML = `<span>📦 ${escHtml(label)}</span>
+        <button type="button" class="img-remove" data-remove-model>Retirer</button>`;
+    } else {
+      el.classList.add("hidden");
+      el.innerHTML = "";
+    }
+  }
+
+  function onImageFile(e) {
+    const file = e.target.files[0];
+    if (!file) return;
+    downscaleImage(file, 1280).then((dataUrl) => {
+      formImage = dataUrl;
+      $("#f-image").value = "";
+      updateImagePreview();
+      toast("Image importée");
+    }).catch((err) => alert("Import impossible : " + err.message));
+    e.target.value = "";
+  }
+
+  function onModelFile(e) {
+    const file = e.target.files[0];
+    if (!file) return;
+    const mb = file.size / (1024 * 1024);
+    if (mb > 4 && !confirm(`Ce modèle pèse ${mb.toFixed(1)} Mo. Les fichiers volumineux peuvent dépasser la capacité de stockage du navigateur. L'importer quand même ?`)) {
+      e.target.value = ""; return;
+    }
+    const reader = new FileReader();
+    reader.onload = () => {
+      formModel = { data: reader.result, name: file.name };
+      $("#f-model").value = "";
+      updateModelInfo();
+      toast("Modèle 3D importé");
+    };
+    reader.onerror = () => alert("Lecture du fichier impossible.");
+    reader.readAsDataURL(file);
+    e.target.value = "";
+  }
+
   function openModal(id) {
     editingId = id || null;
     const p = id ? products.find((x) => x.id === id) : null;
@@ -330,8 +417,14 @@
     $("#f-launchedAt").value = p ? p.launchedAt || "" : "";
     $("#f-description").value = p ? p.description || "" : "";
     $("#f-materials").value = p ? (p.materials || []).join(", ") : "";
-    $("#f-image").value = p ? p.image || "" : "";
-    $("#f-model").value = p ? p.model3d || "" : "";
+
+    formImage = p ? p.image || "" : "";
+    formModel = { data: p ? p.model3d || "" : "", name: p ? p.model3dName || "" : "" };
+    $("#f-image").value = isDataUrl(formImage) ? "" : formImage;
+    $("#f-model").value = isDataUrl(formModel.data) ? "" : formModel.data;
+    updateImagePreview();
+    updateModelInfo();
+
     $("#f-notes").value = p ? p.notes || "" : "";
 
     modal.classList.remove("hidden");
@@ -342,6 +435,10 @@
     modal.classList.add("hidden");
     editingId = null;
     form.reset();
+    formImage = "";
+    formModel = { data: "", name: "" };
+    updateImagePreview();
+    updateModelInfo();
   }
 
   function onCategoryChange(e) {
@@ -371,8 +468,9 @@
       launchedAt: $("#f-launchedAt").value || "",
       description: $("#f-description").value.trim(),
       materials,
-      image: $("#f-image").value.trim(),
-      model3d: $("#f-model").value.trim(),
+      image: formImage,
+      model3d: formModel.data,
+      model3dName: isDataUrl(formModel.data) ? formModel.name : "",
       notes: $("#f-notes").value.trim(),
     };
     applyMilestoneDates(data);
@@ -609,7 +707,7 @@
     }
   }
 
-  async function openViewer(url, title) {
+  async function openViewer(url, title, nameHint) {
     $("#viewer-title").textContent = title || "Visionneuse 3D";
     viewerEl.classList.remove("hidden");
     showReliefControls(false);
@@ -617,7 +715,7 @@
     try {
       await initOnce();
       startLoop();
-      if (url) await loadModel(url, url);
+      if (url) await loadModel(url, nameHint || url);
       else viewerStatus('Aucun modèle. Cliquez sur « Charger un fichier » pour en importer un.');
     } catch (_) {
       viewerStatus("La bibliothèque 3D n'a pas pu être chargée.\nVérifiez votre connexion internet puis réessayez.");
@@ -808,14 +906,24 @@
     $("#btn-delete").addEventListener("click", deleteCurrent);
     $("#f-category").addEventListener("change", onCategoryChange);
     $("#btn-view3d").addEventListener("click", () => {
-      const url = $("#f-model").value.trim();
-      openViewer(url, ($("#f-name").value.trim() || "Concept") + " — modèle 3D");
+      const name = $("#f-name").value.trim() || "Concept";
+      if (!formModel.data) { toast("Aucun modèle 3D : collez un lien ou importez un fichier"); return; }
+      openViewer(formModel.data, name + " — modèle 3D", formModel.name);
     });
     $("#btn-relief").addEventListener("click", () => {
-      const img = $("#f-image").value.trim();
       const name = $("#f-name").value.trim() || "Concept";
-      if (!img) { toast("Renseignez d'abord une image / esquisse, ou utilisez « Image → relief » dans la visionneuse"); return; }
-      openRelief(img, name + " — relief 3D", true);
+      if (!formImage) { toast("Ajoutez d'abord une image / esquisse (lien ou import)"); return; }
+      openRelief(formImage, name + " — relief 3D", !isDataUrl(formImage));
+    });
+    $("#f-image").addEventListener("input", (e) => { formImage = e.target.value.trim(); updateImagePreview(); });
+    $("#f-model").addEventListener("input", (e) => { formModel = { data: e.target.value.trim(), name: "" }; updateModelInfo(); });
+    $("#f-image-file").addEventListener("change", onImageFile);
+    $("#f-model-file").addEventListener("change", onModelFile);
+    $("#f-image-preview").addEventListener("click", (e) => {
+      if (e.target.closest("[data-remove-image]")) { formImage = ""; $("#f-image").value = ""; updateImagePreview(); }
+    });
+    $("#f-model-name").addEventListener("click", (e) => {
+      if (e.target.closest("[data-remove-model]")) { formModel = { data: "", name: "" }; $("#f-model").value = ""; updateModelInfo(); }
     });
     form.addEventListener("submit", submitForm);
     modal.addEventListener("click", (e) => { if (e.target === modal) closeModal(); });
