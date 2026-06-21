@@ -577,6 +577,9 @@
     const wrap = $("#viewer-canvas");
     const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
     renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    if ("outputColorSpace" in renderer) renderer.outputColorSpace = THREE.SRGBColorSpace;
+    renderer.toneMapping = THREE.ACESFilmicToneMapping;
+    renderer.toneMappingExposure = 1.05;
     wrap.appendChild(renderer.domElement);
 
     const scene = new THREE.Scene();
@@ -587,10 +590,16 @@
     controls.enableDamping = true;
     controls.dampingFactor = 0.08;
 
-    scene.add(new THREE.HemisphereLight(0xffffff, 0x223344, 1.15));
-    const dir = new THREE.DirectionalLight(0xffffff, 1.5);
-    dir.position.set(6, 10, 7);
-    scene.add(dir);
+    scene.add(new THREE.HemisphereLight(0xffffff, 0x2a3140, 1.0));
+    const key = new THREE.DirectionalLight(0xffffff, 2.0);
+    key.position.set(5, 8, 6);
+    scene.add(key);
+    const fill = new THREE.DirectionalLight(0xbcd0ff, 0.7);
+    fill.position.set(-6, 2, -4);
+    scene.add(fill);
+    const rim = new THREE.DirectionalLight(0xffffff, 0.6);
+    rim.position.set(0, -4, -6);
+    scene.add(rim);
 
     const grid = new THREE.GridHelper(10, 20, 0x4060a0, 0x223044);
     grid.material.opacity = 0.3;
@@ -749,60 +758,134 @@
     });
   }
 
-  /** Construit un maillage en relief : la luminosité de l'image devient la hauteur. */
+  /** Flou 3×3 séparable sur une grille de hauteurs (réduit le bruit en escalier). */
+  function boxBlur(arr, w, h) {
+    const tmp = new Float32Array(arr.length);
+    for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+      let s = 0, c = 0;
+      for (let d = -1; d <= 1; d++) { const xx = x + d; if (xx >= 0 && xx < w) { s += arr[y * w + xx]; c++; } }
+      tmp[y * w + x] = s / c;
+    }
+    for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+      let s = 0, c = 0;
+      for (let d = -1; d <= 1; d++) { const yy = y + d; if (yy >= 0 && yy < h) { s += tmp[yy * w + x]; c++; } }
+      arr[y * w + x] = s / c;
+    }
+  }
+
+  /** Construit un relief 3D : la luminosité de l'image devient la hauteur.
+   *  Lissage + normalisation du contraste + socle plein (parois + fond). */
   function buildReliefMesh(img) {
     const { THREE } = V;
     const depth = parseFloat($("#relief-depth").value) || 0.45;
     const resolution = parseInt($("#relief-res").value, 10) || 200;
+    const smooth = parseInt($("#relief-smooth").value, 10) || 0;
     const invert = $("#relief-invert").checked;
     const useColor = $("#relief-color").checked;
+    const solid = $("#relief-solid").checked;
 
     const iw = img.naturalWidth || img.width;
     const ih = img.naturalHeight || img.height;
     const scale = resolution / Math.max(iw, ih);
-    const gw = Math.max(2, Math.round(iw * scale));
-    const gh = Math.max(2, Math.round(ih * scale));
+    const cols = Math.max(2, Math.round(iw * scale));
+    const rows = Math.max(2, Math.round(ih * scale));
 
     const cv = document.createElement("canvas");
-    cv.width = gw; cv.height = gh;
+    cv.width = cols; cv.height = rows;
     const ctx = cv.getContext("2d", { willReadFrequently: true });
-    ctx.drawImage(img, 0, 0, gw, gh);
+    ctx.drawImage(img, 0, 0, cols, rows);
     let data;
     try {
-      data = ctx.getImageData(0, 0, gw, gh).data;
+      data = ctx.getImageData(0, 0, cols, rows).data;
     } catch (_) {
       throw new Error("Image protégée par le serveur d'origine (CORS).\nTéléchargez-la puis utilisez « Image → relief » pour l'importer en local.");
     }
 
-    const segX = gw - 1, segY = gh - 1;
+    // 1) Carte de hauteur à partir de la luminance.
+    const H = new Float32Array(cols * rows);
+    for (let i = 0; i < cols * rows; i++) {
+      const p = i * 4;
+      let lum = (0.299 * data[p] + 0.587 * data[p + 1] + 0.114 * data[p + 2]) / 255;
+      if (invert) lum = 1 - lum;
+      H[i] = lum;
+    }
+    // 2) Lissage.
+    for (let s = 0; s < smooth; s++) boxBlur(H, cols, rows);
+    // 3) Normalisation du contraste (étirement min→max).
+    let mn = Infinity, mx = -Infinity;
+    for (let i = 0; i < H.length; i++) { if (H[i] < mn) mn = H[i]; if (H[i] > mx) mx = H[i]; }
+    const range = (mx - mn) || 1;
+    for (let i = 0; i < H.length; i++) H[i] = (H[i] - mn) / range;
+
     const aspect = iw / ih;
     const planeW = aspect >= 1 ? 2 : 2 * aspect;
     const planeH = aspect >= 1 ? 2 / aspect : 2;
+    const base = solid ? Math.max(0.06, depth * 0.5) : 0; // épaisseur du socle
+    const px = (ix) => (ix / (cols - 1) - 0.5) * planeW;
+    const py = (iy) => (0.5 - iy / (rows - 1)) * planeH;
 
-    const geo = new THREE.PlaneGeometry(planeW, planeH, segX, segY);
-    const pos = geo.attributes.position;
-    const colors = useColor ? new Float32Array(pos.count * 3) : null;
+    const positions = [];
+    const colors = [];
+    const indices = [];
+    const pushColor = (r, g, b) => colors.push(r, g, b);
+    const sideColor = useColor ? [0.32, 0.36, 0.46] : [0.62, 0.69, 0.85];
 
-    for (let iy = 0; iy <= segY; iy++) {
-      for (let ix = 0; ix <= segX; ix++) {
-        const vi = iy * (segX + 1) + ix;
-        const p = (iy * gw + ix) * 4;
-        const r = data[p], g = data[p + 1], b = data[p + 2];
-        let lum = (0.299 * r + 0.587 * g + 0.114 * b) / 255;
-        if (invert) lum = 1 - lum;
-        pos.setZ(vi, lum * depth);
-        if (colors) { colors[vi * 3] = r / 255; colors[vi * 3 + 1] = g / 255; colors[vi * 3 + 2] = b / 255; }
+    // Sommets du dessus.
+    for (let iy = 0; iy < rows; iy++) {
+      for (let ix = 0; ix < cols; ix++) {
+        const i = iy * cols + ix;
+        positions.push(px(ix), py(iy), base + H[i] * depth);
+        if (useColor) { const p = i * 4; pushColor(data[p] / 255, data[p + 1] / 255, data[p + 2] / 255); }
+        else pushColor(0.62, 0.69, 0.85);
       }
     }
-    if (colors) geo.setAttribute("color", new THREE.BufferAttribute(colors, 3));
-    pos.needsUpdate = true;
+    // Faces du dessus.
+    for (let iy = 0; iy < rows - 1; iy++) {
+      for (let ix = 0; ix < cols - 1; ix++) {
+        const a = iy * cols + ix, b = a + 1, c = a + cols, d = c + 1;
+        indices.push(a, c, b, b, c, d);
+      }
+    }
+
+    if (solid) {
+      // Anneau de contour (sens horaire).
+      const ring = [];
+      for (let ix = 0; ix < cols; ix++) ring.push([ix, 0]);
+      for (let iy = 1; iy < rows; iy++) ring.push([cols - 1, iy]);
+      for (let ix = cols - 2; ix >= 0; ix--) ring.push([ix, rows - 1]);
+      for (let iy = rows - 2; iy >= 1; iy--) ring.push([0, iy]);
+
+      const ringBottomStart = positions.length / 3;
+      ring.forEach(([ix, iy]) => { positions.push(px(ix), py(iy), 0); pushColor(...sideColor); });
+
+      const topIndex = (ix, iy) => iy * cols + ix;
+      // Parois latérales.
+      for (let k = 0; k < ring.length; k++) {
+        const k2 = (k + 1) % ring.length;
+        const tA = topIndex(ring[k][0], ring[k][1]);
+        const tB = topIndex(ring[k2][0], ring[k2][1]);
+        const bA = ringBottomStart + k;
+        const bB = ringBottomStart + k2;
+        indices.push(tA, bA, tB, tB, bA, bB);
+      }
+      // Fond plein (rectangle).
+      const c0 = positions.length / 3;
+      [[0, 0], [cols - 1, 0], [cols - 1, rows - 1], [0, rows - 1]].forEach(([ix, iy]) => {
+        positions.push(px(ix), py(iy), 0); pushColor(...sideColor);
+      });
+      indices.push(c0, c0 + 1, c0 + 2, c0, c0 + 2, c0 + 3);
+    }
+
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute("position", new THREE.Float32BufferAttribute(positions, 3));
+    geo.setAttribute("color", new THREE.Float32BufferAttribute(colors, 3));
+    geo.setIndex(indices);
     geo.computeVertexNormals();
 
     const mat = new THREE.MeshStandardMaterial({
-      color: useColor ? 0xffffff : 0x9fb2da,
-      vertexColors: !!useColor,
+      vertexColors: true,
       side: THREE.DoubleSide,
-      metalness: 0.05, roughness: 0.85,
+      metalness: 0.05, roughness: 0.8,
     });
     return new THREE.Mesh(geo, mat);
   }
@@ -939,6 +1022,8 @@
     $("#viewer-image-file").addEventListener("change", onReliefImageFile);
     $("#relief-depth").addEventListener("input", regenRelief);
     $("#relief-res").addEventListener("change", regenRelief);
+    $("#relief-smooth").addEventListener("input", regenRelief);
+    $("#relief-solid").addEventListener("change", regenRelief);
     $("#relief-invert").addEventListener("change", regenRelief);
     $("#relief-color").addEventListener("change", regenRelief);
     viewerEl.addEventListener("click", (e) => { if (e.target === viewerEl) closeViewer(); });

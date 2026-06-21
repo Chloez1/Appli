@@ -16,9 +16,11 @@ jusqu'au lancement. Aucune installation, aucune dépendance : il suffit d'ouvrir
   ou depuis votre ordinateur, et visualisez-le en 3D (rotation, zoom, déplacement).
 - **Image → relief 3D** : transformez un dessin plat (esquisse, logo, motif) en
   maillage 3D en relief. La luminosité de l'image définit la hauteur (clair = bosse,
-  sombre = creux). Réglages de profondeur, de niveau de détail, inversion du relief
-  et reprise des couleurs de l'image. Accessible depuis la fiche (« 🪄 Image → relief 3D »)
-  ou via « 🪄 Image → relief » dans la visionneuse pour un fichier local.
+  sombre = creux). Réglages : profondeur, niveau de détail, **lissage** (réduit le
+  bruit), **socle plein** (parois + fond, pour un vrai objet en volume), inversion
+  et reprise des couleurs de l'image. Le contraste est normalisé automatiquement.
+  Accessible depuis la fiche (« 🪄 Image → relief 3D ») ou via « 🪄 Image → relief »
+  dans la visionneuse pour un fichier local.
   *Note : ceci produit un bas-relief, pas une reconstruction volumétrique complète.*
 - **Gestion des catégories** de produits : liste éditable (ajout / suppression),
   réutilisée dans le formulaire et les filtres.
